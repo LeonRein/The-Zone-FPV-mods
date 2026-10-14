@@ -270,8 +270,7 @@ func _init(p_cfg: Dictionary, p_use_rpm_filter: bool = true) -> void:
 	gyro_dt = float(cfg.looptime_us) * 1e-6
 	dt = gyro_dt * float(cfg.pid_process_denom)
 	pid_freq = 1.0 / dt
-	for a in 3:
-		max_rc_rate[a] = apply_rates(a, 1.0, 1.0)
+	update_rates()
 	_build_throttle_lut()
 	auto_sp = 1.5 / (1.0 + float(cfg.rc_smoothing_auto_factor) / 10.0)
 	auto_thr = 1.5 / (1.0 + float(cfg.rc_smoothing_auto_factor_throttle) / 10.0)
@@ -374,7 +373,17 @@ func _init(p_cfg: Dictionary, p_use_rpm_filter: bool = true) -> void:
 
 
 # ------------------------------------------------------------------ rc.c
+## The rates of cfg (rates_type, rc_rates, rates, rc_expo) changed: the stick's full rate is worked out again
+func update_rates() -> void:
+	for a in 3:
+		max_rc_rate[a] = apply_rates(a, 1.0, 1.0)
+
+
 func apply_rates(axis: int, rc: float, rc_abs: float) -> float:
+	if int(cfg.rates_type) == 1:   # KISS (as the game's: rc_rates/100 = rate, rates/100 = rate factor, rc_expo/100 = curve)
+		var ke := float(cfg.rc_expo[axis]) / 100.0
+		var kc := (pow(rc, 3) * ke + rc * (1.0 - ke)) * (float(cfg.rc_rates[axis]) / 100.0)
+		return 200.0 * kc / clampf(1.0 - rc_abs * float(cfg.rates[axis]) / 100.0, 0.01, 1.0)
 	if int(cfg.rates_type) == 3:   # ACTUAL
 		var expof := float(cfg.rc_expo[axis]) / 100.0
 		expof = rc_abs * (pow(rc, 5) * expof + rc * (1.0 - expof))

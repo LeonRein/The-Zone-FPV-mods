@@ -29,7 +29,8 @@ TURNING IT ON
 WHAT CHANGES
   For a drone with a model (the game's 5" Freestyle: freestyle5), each physics
   tick (the game's: 500 a second):
-    - the sticks go through your own Rates settings in the game and ask for a
+    - the sticks go through the rates (rates=game: your own Rates settings in
+      the game, followed live; rates=model: the real quad's) and ask for a
       rotation rate, as on a radio; the Betaflight 2026.6 rate loop of the
       real quad - rates, RC smoothing, feedforward, PID with I-term relax and
       anti-gravity, D filters and RPM filter, TPA, dynamic idle, airmode and
@@ -57,7 +58,8 @@ WHAT CHANGES
       drain (fpv_osd shows it through real_quad)
     - weight and inertia (roll, pitch, yaw, not equal), the body's drag in the
       air and the in-plane drag of the spinning props come from the model;
-      the game's own thrust, drag, wind and torque are not used
+      the game's own thrust, drag and torque are not used (its drag
+      multipliers and its wind are, see GAME SETTINGS UNDER real_quad)
     - prop wash is dirty_air's: the air it works out at each prop - the
       flow and gusts of the wake the quad left behind, its descent curve and
       vortex ring state - goes into the model's props (descending, dirty_air's
@@ -70,8 +72,9 @@ WHAT CHANGES
       Without dirty_air the quad flies in clean air: no prop wash at all
       (only a light calm-air turbulence, which dirty_air has no equivalent
       of and so stays the model's)
-    - the game keeps: its inputs and arming, OSD and camera, crash and respawn,
-      sound (its pitch follows the model's motors), multiplayer and stats. The
+    - the game keeps: its inputs and arming, OSD and camera (its camera settings
+      apply), crash and respawn, sound (its pitch follows the model's motors,
+      scaled to the game's own range), multiplayer and stats. The
       physics engine moves the quad and finds its contacts; when a crash or a
       respawn changes its speed, the model takes that over
 
@@ -89,8 +92,9 @@ WHAT CHANGES
 MODELS
   A model is a folder in real_quad/models with three files:
     craft.json  who it is: id, name, zone_vehicle_id (the game's drone it is
-                made for), weight, camera angle and fov, linear_drag (the
-                drag knob's default) and a description of the hardware
+                made for), weight, linear_drag (the drag knob's default)
+                and a description of the hardware (camera angle and fov in
+                it are not used: the game's camera settings apply)
     fc.json     the real flight controller's settings, from its blackbox
                 header (the loop rate, rates, PIDs, filters, ...)
     plant.json  the identified quad: motors, thrust and torque constants,
@@ -117,12 +121,28 @@ SETTINGS
     - a section for each of the game's quads:
         model: "auto" (the model made for it, if any), "off" (the game's
           physics), or a model's name - any model on any drone
+        rates: "game" (the default: the sticks' rates are the game's own,
+          Pause > Rates - Actual, Betaflight or KISS - and follow a change at
+          once) or "model" (the rates of the model's own Betaflight setup)
         propwash: the strength of the prop wash, 1 = as calibrated, 0 = none
           (times the package's wash and wake handed to dirty_air)
         drag: the props' drag on the quad moving across them, 1/s at hover;
           0 = the model's own
-  A quad's weight, thrust and drag in the game's Physics menu do nothing for
-  a quad a model flies: the model's are used.
+
+
+GAME SETTINGS UNDER real_quad
+  For a quad a model flies:
+    Apply: Rates (the rates setting above; the max-rate readout of the OSD
+      shows these rates), Physics menu's drag multipliers (surface area x, y,
+      z in percent: 100 = the identified body drag; z scales the drag flying
+      forward or back, x sideways, y up or down), the wind setting and its
+      gusts and shelter (the quad flies through moving air: body drag and
+      props' inflow, with or without dirty_air), the camera settings, the
+      game's silence of motors and thrust while its window has no focus.
+    The model defines, the game's Physics menu does nothing: weight, thrust
+      and top speed (the model's mass, inertia, motors, props and battery).
+    Turtle mode and the pause menu use the game's own physics, as for any drone:
+      the model flies again when you are back.
 
 
 WITH THE OTHER MODS
@@ -191,48 +211,6 @@ WITH THE OTHER MODS
   Not touched (nothing to do with the quad's physics): analog400mw (the video
   picture and signal), throttle_fix (the radio's throttle reading), player_list
   (the players' names), examples/glb_anim (animated maps), zonemods itself.
-
-
-HOW IT WORKS
-    - a section for each of the game's quads:
-        model: "auto" (the model made for it, if any), "off" (the game's
-          physics), or a model's name - any model on any drone
-        propwash: the strength of the prop wash, 1 = as calibrated, 0 = none
-          (times the package's wash and wake handed to dirty_air)
-        drag: the props' drag on the quad moving across them, 1/s at hover;
-          0 = the model's own
-  A quad's weight, thrust and drag in the game's Physics menu do nothing for
-  a quad a model flies: the model's are used.
-
-
-WITH THE OTHER MODS
-  flight_controller: if it is in effect, real_quad flies the drones it has a
-  model for, and flight_controller flies all the others. Where a model flies,
-  flight_controller's own controller is not run. (zonemods loads mods in name
-  order, so flight_controller comes first. If you list the mods in
-  override.cfg with real_quad first, flight_controller stays out altogether
-  and says so in its status.txt: real_quad then flies its drones and the game
-  the rest.)
-  Why this works: the game's quad is moved by a custom integrator while a
-  model flies it, and the physics engine ignores forces applied to such a
-  body. The mods that push the quad with forces do not reach it, so nothing is
-  counted twice:
-    - dirty_air: the prop wash and the floor and ceiling. real_quad calls its
-      set_model() each tick (the model's thrust, props, frame, wash, wake and
-      gust); dirty_air then works out the air at each prop of that quad and
-      the model takes it, and dirty_air pushes it no more and does not shake
-      it. Its settings (descent, wake, wash, ground_effect, ceiling_effect)
-      apply as for every drone
-    - battery_sag: its pack is the model's (see WHAT CHANGES); real_quad
-      drives it with external_pack() / drive() and the motors run on its
-      voltage
-    - rotor_drag: the model has its own rotor drag (drag= here)
-    - motor_response: the model has its own motors
-    - prop_damage: its force on the props is not applied; its bumps and
-      vibration still move the body
-  Other drones, not flown by a model, are exactly as with those mods.
-  fpv_osd, mod_settings, drones and pilot_audio work as before. Race times are never posted while real_quad is in effect (the
-  physics are not the game's).
 
 
 HOW IT WORKS

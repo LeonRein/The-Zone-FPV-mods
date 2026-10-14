@@ -14,7 +14,11 @@ extends RefCounted
 ## Otherwise the game's own physics fly the quad, as without this mod.
 ##
 ## The game's own physics step still runs every tick: inputs, arming, OSD,
-## respawn, multiplayer packets and stats are the game's.
+## respawn, multiplayer packets and stats are the game's. Of the game's settings the
+## model takes: the Rates menu (rates=game: ZSettings.RATES go into the Betaflight rates, live), the
+## Physics menu's surface_area_*_multi (scale the body drag), the wind (ZGamestate.current_wind_effect,
+## moving air round the quad), the camera settings and the window focus (an unfocused game has no thrust).
+## The weight, thrust and top speed of the Physics menu are the model's, by design.
 ##
 ## Each tick, before the model integrates, the hook hands it the props' condition
 ## (prop_damage: each prop's thrust factor, and its out-of-balance as vibration in the gyro
@@ -29,12 +33,20 @@ const TRACK_HANDLER_PATH := ^"/root/IngameMain/TrackHandler"
 # On the body while a model flies it: the four rotor speeds (shaft rpm, PackedFloat32Array, Betaflight's
 # motor order: rear right, front right, rear left, front left), for pilot_audio's motor voices
 const RPM_META := "motor_rpm"
+# The game's own top of the motor scale (22.2 V * 1400 KV, player_rigid_body.gd MAX_MOTOR_RPM): its sound's pitch and
+# volume and the motor speed other players get are current_motor_rpm / this
+const GAME_MAX_RPM := 31080.0
 
 var host: RigidBody3D
 var mod: Node                       # the real_quad mod (main.gd)
 var model: RefCounted = null        # BFModel flying this body right now (null while inactive)
 var active := false
 var _gs = null                      # the game's ZGamestate autoload
+var _zs = null                      # the game's ZSettings autoload (RATES)
+var focus_override := 0             # tests: 1 = the game's window has focus, -1 = it has not, 0 = ask the window
+var _rates_mode := "game"           # the drone's rates setting
+var _rates_key = []                 # the game's rates last handed to the model
+var _drag_key := Vector3(-1, -1, -1)   # the game's drag multipliers last handed to the model (-1: none yet)
 var _orig_body := {}                # body properties restored when switching back to the game's physics
 var _gen := -1                      # mod.generation the model was last given its settings for
 var _vid := ""                      # vehicle the settings were looked up for
@@ -52,6 +64,7 @@ func _init(p_host: RigidBody3D, p_mod: Node) -> void:
 
 func ready() -> void:
 	_gs = host.get_node_or_null("/root/ZGamestate")
+	_zs = host.get_node_or_null("/root/ZSettings")
 	if host.has_signal("teleported"):
 		host.connect("teleported", func() -> void:
 			if model != null:
@@ -70,6 +83,7 @@ func before_physics() -> void:
 		_gen = mod.generation
 		_vid = vid
 	if model != null:
+		_apply_game_settings()
 		model.apply_air(mod.air_node(), mod.ground_ceiling_effect)
 		_apply_props()
 		_apply_battery(vid)
@@ -79,6 +93,8 @@ func before_physics() -> void:
 func after_physics() -> void:
 	if active:
 		host.custom_integrator = true      # the original may have reloaded its settings this tick
+		model.apply_mass(host)             # ... and then set the mass of its Physics menu again
+		_max_rate_osd()
 		var w: PackedFloat64Array = model.quad.w
 		var k := 60.0 / TAU
 		host.set_meta(RPM_META, PackedFloat32Array([w[0] * k, w[1] * k, w[2] * k, w[3] * k]))
@@ -91,7 +107,9 @@ func after_physics() -> void:
 func before_sound() -> void:
 	if active:
 		var w: PackedFloat64Array = model.quad.w
-		host.set("current_motor_rpm", (w[0] + w[1] + w[2] + w[3]) * 0.25 * 60.0 / TAU)
+		# the game's scale runs to GAME_MAX_RPM at full throttle, the model's rotors turn faster: pitch and volume span as the game's
+		var mean := (w[0] + w[1] + w[2] + w[3]) * 0.25 * 60.0 / TAU
+		host.set("current_motor_rpm", mean * GAME_MAX_RPM / maxf(model.full_rpm(), 1.0))
 
 
 func integrate_forces(state: PhysicsDirectBodyState3D) -> void:
@@ -99,7 +117,8 @@ func integrate_forces(state: PhysicsDirectBodyState3D) -> void:
 		return
 	var sp: Vector4 = host.get("stick_pos")     # (roll, pitch, throttle, yaw), after the game's setpoint latency
 	var rc := {"roll": sp.x, "pitch": sp.y, "yaw": sp.w, "throttle": sp.z}
-	model.integrate_forces(host, state, rc, bool(host.call("is_armed")))
+	# the game gives no thrust while its window has no focus: the motors stop as when disarmed
+	model.integrate_forces(host, state, rc, bool(host.call("is_armed")) and _focused())
 
 
 func _vehicle_id() -> String:
@@ -149,12 +168,62 @@ func _deactivate() -> void:
 	host.set("_SETTINGS", null)        # the game re-applies its mass and shapes next tick
 
 
-## The vehicle's own settings (propwash, drag) for the model
+func _focused() -> bool:
+	if focus_override != 0:
+		return focus_override > 0
+	var vp := host.get_viewport()
+	var w := vp.get_window() if vp != null else null
+	return w == null or w.has_focus()
+
+
+## The game's own settings the model follows each tick: its drag multipliers (Physics menu), the wind and, with
+## rates=game, the Rates menu's rates (taken again when they change).
+func _apply_game_settings() -> void:
+	# drag multipliers: the vehicle's adjustable_settings (the game's own copy; null for a tick after a reload)
+	var s = host.get("_SETTINGS")
+	var adj = null
+	if s is Dictionary or s is Object:
+		adj = s.get("adjustable_settings")
+	if adj is Dictionary:
+		var m := Vector3(float(adj.get("surface_area_x_multi", 100.0)), float(adj.get("surface_area_y_multi", 100.0)), float(adj.get("surface_area_z_multi", 100.0)))
+		if m != _drag_key:
+			_drag_key = m
+			model.set_drag_multipliers(m.x, m.y, m.z)
+	elif _drag_key.x < 0.0:
+		_drag_key = Vector3(100, 100, 100)
+		model.set_drag_multipliers(100.0, 100.0, 100.0)
+	# wind: relative air velocity (the game's gusts and shelter are in it)
+	var wind = _gs.get("current_wind_effect") if _gs != null else null
+	model.set_wind(wind if wind is Vector3 else Vector3.ZERO)
+	# rates
+	if _rates_mode == "game" and _zs != null:
+		var r = _zs.get("RATES")
+		if r is Dictionary:
+			var key := [r.get("type"), r.get("roll"), r.get("pitch"), r.get("yaw")]
+			if key != _rates_key:
+				_rates_key = key
+				model.set_game_rates(r)
+
+
+## The game's max-rate OSD readout (curr_max_rate, every 60 ticks, when its option is on) from the rates in use
+func _max_rate_osd() -> void:
+	if _gs == null or _gs.get("enable_current_max_rate_osd") != true or Engine.get_physics_frames() % 60 != 0:
+		return
+	var sp: Vector4 = host.get("stick_pos")
+	_gs.OSD_VALUES["curr_max_rate"] = "%.0f" % model.current_max_rate_dps({"roll": sp.x, "pitch": sp.y, "yaw": sp.w})
+
+
+## The vehicle's own settings (propwash, drag, rates) for the model
 func _apply_settings(vid: String) -> void:
 	var s: Dictionary = mod.drone_cfg(vid)
 	model.set_propwash_scale(float(s["propwash"]))
 	var d := float(s["drag"])
 	model.set_linear_drag(d if d > 0.0 else model.get_package_linear_drag())
+	_rates_mode = str(s.get("rates", "game"))
+	_rates_key = []
+	_drag_key = Vector3(-1, -1, -1)
+	if _rates_mode != "game":
+		model.use_package_rates()
 
 
 ## prop_damage's props: the model gets each prop's thrust factor and out-of-balance (set_model() of

@@ -67,7 +67,7 @@ func zm_init(core: Node, _dir: String) -> void:
 
 
 ## Reads settings.cfg (settings.default.cfg when there is none): [real_quad] and a
-## section per drone with model, propwash and drag
+## section per drone with model, propwash, drag and rates
 func read_settings(path := settings_path) -> void:
 	settings_path = path
 	var c := ConfigFile.new()
@@ -86,6 +86,7 @@ func read_settings(path := settings_path) -> void:
 			"model": model,
 			"propwash": clampf(float(c.get_value(sec, "propwash", 1.0)), 0.0, 5.0),
 			"drag": clampf(float(c.get_value(sec, "drag", 0.0)), 0.0, 3.0),
+			"rates": "model" if str(c.get_value(sec, "rates", "game")).strip_edges() == "model" else "game",
 		}
 		if model == "off":
 			overrides.set_value("vehicle_models", sec, ModelRegistry.NONE)
@@ -127,7 +128,7 @@ func zm_settings_status() -> String:
 		if str(drone_cfg(vid)["model"]) == "auto":
 			what += " (auto)"
 		lines.append("%s%s: %s" % [_drone_name(vid), " (flying)" if vid == flying else "", what])
-	return "In use now - " + "; ".join(lines) + ". Changes take effect at once."
+	return "In use now - " + "; ".join(lines) + ". Changes take effect at once. A model's weight, thrust and top speed come from the model, not from the game's Physics menu."
 
 
 # the game's name of a drone, from mod_settings when it is there
@@ -155,9 +156,10 @@ func model_id_for(vehicle_id: String) -> String:
 	return registry.resolve(vehicle_id)
 
 
-## The drone's own settings: propwash (1 = as calibrated) and drag (0 = the package's own)
+## The drone's own settings: propwash (1 = as calibrated), drag (0 = the package's own) and rates
+## ("game" = the game's Rates menu, "model" = the package's)
 func drone_cfg(vehicle_id: String) -> Dictionary:
-	return drones.get(vehicle_id, {"model": "auto", "propwash": 1.0, "drag": 0.0})
+	return drones.get(vehicle_id, {"model": "auto", "propwash": 1.0, "drag": 0.0, "rates": "game"})
 
 
 ## dirty_air's air node (the air at the props: prop wash, floor and ceiling), or null
