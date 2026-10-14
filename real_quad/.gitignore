@@ -1,0 +1,9 @@
+# made at every launch / by the game
+settings.cfg
+settings.base.cfg
+status.txt
+status.last.txt
+remap.pck
+base/*.gdc
+# Godot
+*.uid

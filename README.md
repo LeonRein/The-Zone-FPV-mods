@@ -68,6 +68,9 @@ Provides new features to the player list: flyout menu behavior, and player join/
 
 Props can take damage, causing gyro noise and instability. Props can also break. Damage is fixed on reset, and ducted props take less damage. If fpv_osd is installed, it will put the damage UI into the OSD format.
 
+## real_quad
+LATEST: new. Flight models of real quads: a Betaflight rate loop (ported from the firmware, GPL-3.0) flying a quad identified from a real quad's blackbox logs - motors, props, battery, inertia, drag - instead of the game's idealised physics, for the drones that have a model. Comes with two models: "freestyle5" (5", 650 g, 6S) for the 5" Freestyle and "freestyle35" (3.5", 300 g, 4S) for the 3.5" Freestyle. Per-drone model choice ("auto" picks the model made for the drone; the Mods page shows which one flies), prop wash and drag in settings.cfg and in-game with mod_settings. Uses the other mods where they cover something: dirty_air for prop wash, floor and ceiling (calibrated per model on the real quad's logs), battery_sag for the pack (driven by the model's motor current), prop_damage for thrust loss and vibration of damaged props, and fpv_osd shows it all. Works with flight_controller (real_quad flies the drones it has a model for, flight_controller the rest); stands aside while mode_3d is on. Race times are never posted while it flies. Off until you turn it on.
+
 ## Rotor Drag
 
 simulates rotor drag. Configurable options per drone. Force grows with the speed itself. Removes the physics engine's hidden damping

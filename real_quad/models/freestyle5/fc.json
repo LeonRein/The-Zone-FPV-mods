@@ -1,0 +1,130 @@
+{
+ "firmware": "Betaflight 2026.6.2 (e0b7bb01b) STM32F405",
+ "craft": "5\" freestyle, 650 g, 6S",
+ "looptime_us": 125,
+ "pid_process_denom": 2,
+ "pid": {
+  "roll": [
+   45,
+   55,
+   33
+  ],
+  "pitch": [
+   42,
+   58,
+   37
+  ],
+  "yaw": [
+   50,
+   80,
+   0
+  ]
+ },
+ "ff_weight": [
+  125,
+  130,
+  140
+ ],
+ "d_max": [
+  33,
+  37,
+  0
+ ],
+ "d_max_gain": 0,
+ "d_max_advance": 35,
+ "rates_type": 3,
+ "rc_rates": [
+  21,
+  21,
+  21
+ ],
+ "rates": [
+  70,
+  70,
+  70
+ ],
+ "rc_expo": [
+  57,
+  57,
+  57
+ ],
+ "rate_limits": [
+  1998,
+  1998,
+  1998
+ ],
+ "thr_mid": 50,
+ "thr_expo": 0,
+ "thr_hover": 50,
+ "deadband": 0,
+ "yaw_deadband": 0,
+ "mincheck": 1050,
+ "rc_smoothing": 1,
+ "rc_smoothing_auto_factor": 25,
+ "rc_smoothing_auto_factor_throttle": 30,
+ "rc_smoothing_setpoint_cutoff": 0,
+ "rc_smoothing_throttle_cutoff": 0,
+ "rx_rate_hz": 250.0,
+ "serialrx_crsf": true,
+ "feedforward_averaging": 0,
+ "feedforward_smooth_factor": 40,
+ "feedforward_jitter_factor": 7,
+ "feedforward_boost": 15,
+ "feedforward_max_rate_limit": 90,
+ "feedforward_transition": 0,
+ "feedforward_yaw_hold_gain": 15,
+ "feedforward_yaw_hold_time": 100,
+ "iterm_relax": 1,
+ "iterm_relax_type": 1,
+ "iterm_relax_cutoff": 15,
+ "iterm_windup": 80,
+ "pidsum_limit": 1000,
+ "pidsum_limit_yaw": 1000,
+ "anti_gravity_gain": 100,
+ "anti_gravity_cutoff_hz": 5,
+ "anti_gravity_p_gain": 100,
+ "tpa_mode": 0,
+ "tpa_rate": 45,
+ "tpa_breakpoint": 1350,
+ "tpa_low_rate": 20,
+ "tpa_low_breakpoint": 1050,
+ "tpa_low_always": 0,
+ "throttle_boost": 5,
+ "throttle_boost_cutoff": 15,
+ "thrust_linear": 0,
+ "motor_output_limit": 100,
+ "motor_idle": 550,
+ "dyn_idle_min_rpm": 40,
+ "dyn_idle_p_gain": 50,
+ "dyn_idle_i_gain": 50,
+ "dyn_idle_d_gain": 50,
+ "dyn_idle_max_increase": 150,
+ "airmode": true,
+ "yaw_motors_reversed": true,
+ "gyro_lpf1_static_hz": 0,
+ "gyro_lpf1_type": 0,
+ "gyro_lpf2_static_hz": 750,
+ "gyro_lpf2_type": 0,
+ "dterm_lpf1_dyn_hz": [
+  90,
+  180
+ ],
+ "dterm_lpf1_dyn_expo": 5,
+ "dterm_lpf1_static_hz": 90,
+ "dterm_lpf1_type": 0,
+ "dterm_lpf2_static_hz": 180,
+ "dterm_lpf2_type": 2,
+ "yaw_lowpass_hz": 0,
+ "rpm_filter_harmonics": 3,
+ "rpm_filter_min_hz": 100,
+ "rpm_filter_fade_range_hz": 50,
+ "rpm_filter_q": 500,
+ "rpm_filter_lpf_hz": 150,
+ "rpm_filter_weights": [
+  100,
+  100,
+  100
+ ],
+ "motor_poles": 14,
+ "motor_kv": 1960
+}

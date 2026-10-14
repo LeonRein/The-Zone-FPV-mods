@@ -1,0 +1,78 @@
+{
+ "mass": 0.65,
+ "kv_rad": 205.25072003453315,
+ "motor_a": [
+  4742.2,
+  5029.9,
+  4981.7,
+  4820.2
+ ],
+ "motor_b": [
+  0.0035232,
+  0.0035544,
+  0.0036299,
+  0.0035763
+ ],
+ "motor_c": [
+  465.2,
+  620.7,
+  664.3,
+  566.1
+ ],
+ "motor_delay_s": 0.001,
+ "kT": 1.621e-06,
+ "arm": 0.08,
+ "Ixx": 0.001573,
+ "Iyy": 0.001846,
+ "Izz": 0.002906,
+ "kQ": 2.355e-08,
+ "J_rotor": 6.596e-06,
+ "yaw_spin": [
+  1,
+  -1,
+  -1,
+  1
+ ],
+ "rate_damping": [
+  2.1,
+  0.729,
+  0.931
+ ],
+ "pitch_m_per_rad": 0.020172252417125367,
+ "cd_area": [
+  0.008798,
+  0.01054,
+  0.02651
+ ],
+ "rotor_drag": 4.775e-05,
+ "linear_drag_ref_sum_w": 3966.3,
+ "torque_bias_per_thrust": [
+  0.000512,
+  -0.0011,
+  -7.04e-06
+ ],
+ "battery_v0": 25.34,
+ "battery_drain": 0.0,
+ "battery_r": 0.1178,
+ "prop_radius": 0.0648,
+ "wake_dt": 0.01,
+ "wake_life": 2.5,
+ "wake_min_age": 0.06,
+ "wake_r0": 0.12,
+ "wake_growth": 0.35,
+ "wake_slip_factor": 1.6,
+ "wake_decel": 1.5,
+ "wake_cap": 1.0,
+ "wake_gain": 0.35,
+ "turb_base_ms": 0.233,
+ "pw_turb_ms": 3.8,
+ "pw_noise_hz": 25.0,
+ "vrs_center": 1.0,
+ "vrs_width": 0.5,
+ "vrs_loss": 0.25,
+ "seed": 1,
+ "_comment": "freestyle5: plant identified by fpvident from 10 blackbox logs (m5_01_chirp6, m5_02_crash, m5_03_hover, m5_04_freestyle, m5_05_freestyle, m5_06_freestyle_abgeschnitten, m5_07_chirp9, btfl_001, btfl_011, btfl_012); see report.md. Body frame FLU = Betaflight gyro frame; motor order RR, FR, RL, FL.",
+ "dirty_air_wash": 0.7,
+ "dirty_air_wake": 1.0,
+ "dirty_air_gust": 10.5
+}

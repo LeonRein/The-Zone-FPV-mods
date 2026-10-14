@@ -1,0 +1,14 @@
+{
+  "id": "freestyle5",
+  "name": "5\" freestyle, 650 g, 6S",
+  "zone_vehicle_id": "5in_freestyle",
+  "mass_kg": 0.650,
+  "cells": 6,
+  "battery": {"cells": 6, "capacity_mah": 1500, "lihv": false},
+  "motor": {"kv": 1960, "size": "2207"},
+  "prop": {"model": "HQProp 5.1x4.9x3 (51499)", "diameter_in": 5.1, "pitch_in": 4.99, "blades": 3},
+  "camera_angle_deg": 20,
+  "camera_fov_deg": 123,
+  "top_speed_kmh": 165,
+  "linear_drag": 0.50
+}
