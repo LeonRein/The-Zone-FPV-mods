@@ -45,6 +45,12 @@ SETTINGS
   stereo is and which way you face can be set. The game's volume slider still
   sets the overall level.
 
+  listen_from="quad" puts the microphone on your own quad instead: it sounds
+  as loud as the game plays it, with no distance, air, walls, delay, doppler
+  or stereo (with motor voices too); other players' quads are then heard from
+  your quad. "pilot" (the default) is the spawn point as above. Changed in
+  mod_settings, it applies at once.
+
 
 OTHER PLAYERS
   The game sends each player's position and sticks, not their motor speed or
@@ -53,6 +59,25 @@ OTHER PLAYERS
   quiet. The nearest 8 are heard (multiplayer_max); as players come and go
   or fly nearer and further, sounds fade in and out rather than starting and
   stopping dead.
+
+
+MOTOR VOICES (prototype, off by default)
+  The game plays one recording for the whole quad. With motor_voices=true in
+  settings.cfg, your own quad's sound is instead made of four voices, one per
+  motor, each at the speed of that rotor (timbre modelled on the game's own
+  quad recording: blade pass and its overtones with a little turbulence noise
+  around each, plus a quiet noise bed), so a roll
+  or a punch is heard as the four pitches moving apart and together. It needs
+  the quad to publish its rotor speeds; without that, the game's sound plays as
+  before. The voices go through the same distance, air, walls, stereo, delay
+  and doppler as the game's sound; motor_voices_db sets their loudness against
+  it. Other players' quads are not affected.
+
+  For mod authors: the quad's body (the game's Player node) carries the meta
+  "motor_rpm", a PackedFloat32Array of the four rotor speeds in rpm (shaft
+  revolutions a minute, not electrical), set every physics tick. The recipe is
+  in motor_voices.gd; fpv-sim's tools/render_motor_sound.py renders the same
+  sound offline from a blackbox log.
 
 
 TROUBLESHOOTING

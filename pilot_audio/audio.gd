@@ -29,6 +29,17 @@ extends Node
 ## dead. Their loudness goes on their players (which Godot ramps across each
 ## mix) and their buses are kept for reuse, so the audio layout does not
 ## change while they come and go.
+##
+## Motor voices (motor_voices, off by default; prototype): when the local quad's body carries the meta
+## "motor_rpm" (a PackedFloat32Array of the four rotor speeds in rpm, published by real_quad), the game's
+## one-recording motor sound is muted and motor_voices.gd plays one voice per motor on the same bus, so
+## distance, air, walls, stereo, delay and doppler apply as before: the loudness the game would play (with
+## its delay) and the doppler factor go on top of the voices' own rotor speeds. Without the meta, or with
+## the setting off, nothing changes. Other players' quads are not affected.
+##
+## Listening from the quad (listen_from = quad): the own quad is heard as with a microphone on it - no
+## distance, air, walls, delay, doppler or stereo, at the loudness the game (or the motor voices) plays it.
+## Other players' quads are then heard from the own quad's position, facing its way. Changes apply live.
 
 const SOUND_SPEED := 343.0
 const HISTORY_S := 5.0
@@ -51,6 +62,9 @@ const IDLE_RPM := 1200.0
 const AIR_D := [0.0, 10.0, 20.0, 40.0, 70.0, 100.0, 150.0, 200.0, 300.0, 500.0, 800.0, 1200.0, 2000.0]
 const AIR_HZ := [20000.0, 16582.0, 11398.0, 7852.0, 5764.0, 4690.0, 3652.0, 3006.0, 2190.0, 1280.0, 690.0, 451.0, 303.0]
 const WALL_CUTOFF := 1500.0          # what gets round a building
+const VOICES_META := "motor_rpm"     # on the local quad's body: PackedFloat32Array, 4 rotor speeds in rpm
+const VOICES_SCRIPT := "res://pilot_audio/motor_voices.gd"
+const MUTED_DB := -80.0
 
 const DEFAULTS := {
 	"pilot_height": 1.7,
@@ -67,6 +81,9 @@ const DEFAULTS := {
 	"multiplayer": true,
 	"multiplayer_max": 8,
 	"mute_in_background": true,
+	"motor_voices": false,
+	"motor_voices_db": 0.0,
+	"listen_from": "pilot",
 }
 
 
@@ -131,6 +148,9 @@ var _width := 0.8
 var _mp := true
 var _mp_max := 8
 var _mute_bg := true
+var _voices_on := false
+var _voices_db := 0.0
+var _onboard := false                # listen_from = quad: the listener rides on the own quad
 
 var _scene: Node = null
 var _local: Src = null
@@ -152,6 +172,7 @@ var _pool: Array = []                # remote buses not in use, kept for reuse
 var _off := false
 var _zs: Node = null
 var _gs: Node = null
+var _voices: Node = null             # motor_voices.gd, while it plays the local quad
 # _at()'s answer
 var _a_pos := Vector3.ZERO
 var _a_pitch := 1.0
@@ -180,10 +201,18 @@ func setup(dir: String) -> String:
 	_mp = bool(cfg["multiplayer"])
 	_mp_max = int(cfg["multiplayer_max"])
 	_mute_bg = bool(cfg["mute_in_background"])
+	_voices_on = bool(cfg["motor_voices"])
+	_voices_db = float(cfg["motor_voices_db"])
+	_onboard = str(cfg["listen_from"]).strip_edges().to_lower() == "quad"
+	if not _voices_on:
+		_voices_stop()
 	# after the game's player has set the motor sound each physics tick
 	process_physics_priority = 1000
-	var parts := ["pilot at the spawn point, %.1f m up, facing the spawn's way%s" % [_height,
-		(" turned %+d degrees" % int(_facing_off)) if _facing_off != 0.0 else ""]]
+	var parts := []
+	if _onboard:
+		parts.append("listening from the quad: your own quad as loud as the game plays it, no distance, air, walls, delay or stereo; other players' quads heard from yours")
+	parts.append_array(["pilot at the spawn point, %.1f m up, facing the spawn's way%s" % [_height,
+		(" turned %+d degrees" % int(_facing_off)) if _facing_off != 0.0 else ""]])
 	parts.append("full volume within %.1f m, then %.1f dB quieter each time the distance doubles" % [_ref, 6.02 * _falloff])
 	var fx := []
 	if _air:
@@ -196,6 +225,8 @@ func setup(dir: String) -> String:
 		fx.append("stereo (width %.2f)" % _width)
 	parts.append("effects: " + (", ".join(fx) if not fx.is_empty() else "none"))
 	parts.append(("multiplayer: other players' quads heard, up to %d" % _mp_max) if _mp else "multiplayer: off")
+	if _voices_on:
+		parts.append("motor voices: on (needs the quad to publish meta %s), %+.1f dB" % [VOICES_META, _voices_db])
 	return "\n".join(parts)
 
 
@@ -233,6 +264,7 @@ func _physics_process(dt: float) -> void:
 					sources.erase(s)
 					_free_src(s)
 	_write_local()
+	_update_voices()
 	cost_us += (float(Time.get_ticks_usec() - t0) - cost_us) * 0.01
 
 
@@ -253,7 +285,7 @@ func _capture_local() -> void:
 
 
 func _write_local() -> void:
-	if not _delay or _local == null or _local.te < 0.0 or _qa == null or not is_instance_valid(_qa):
+	if not _local_delay() or _local == null or _local.te < 0.0 or _qa == null or not is_instance_valid(_qa):
 		return
 	# the game's pitch and loudness from when the sound left, with the doppler
 	# worked out at the last sums
@@ -266,9 +298,64 @@ func _write_local() -> void:
 	_written_vol = _qa.volume_db
 
 
+# ---- motor voices (the local quad only) ----
+
+# Four voices instead of the game's recording while the quad publishes its rotor speeds. Runs after
+# _write_local, so the game's loudness (with delay) is known, and mutes the game's player afterwards.
+func _update_voices() -> void:
+	var rpm = null
+	if _voices_on and _local != null and is_instance_valid(_local.node) and _qa != null and is_instance_valid(_qa):
+		if _local.node.has_meta(VOICES_META):
+			rpm = _local.node.get_meta(VOICES_META)
+	if not (rpm is PackedFloat32Array and (rpm as PackedFloat32Array).size() >= 4):
+		_voices_stop()
+		return
+	if _voices == null:
+		var script = load(VOICES_SCRIPT)
+		if not (script is Script and script.can_instantiate()):
+			_voices_on = false
+			return
+		_voices = script.new()
+		_voices.name = "MotorVoices"
+		add_child(_voices)
+		_voices.start(_local.bus)
+	# what the game would play, delayed like the sound; the doppler on the pitches
+	var vol := _out_vol if _local_delay() and _local.te >= 0.0 else _game_vol
+	_voices.set_targets(rpm, vol + _voices_db, _local.doppler if _local_delay() else 1.0, _qa.playing)
+	# the game's own sound keeps playing, silent, so its start and stop still tell us when to be heard
+	_qa.volume_db = MUTED_DB
+	_written_vol = _qa.volume_db
+
+
+func _voices_stop() -> void:
+	if _voices == null:
+		return
+	if is_instance_valid(_voices):
+		_voices.silence()
+		_voices.queue_free()
+		# let the game's sound be heard again
+		if _qa != null and is_instance_valid(_qa):
+			_qa.volume_db = _game_vol if not _local_delay() else _out_vol
+			_written_vol = _qa.volume_db
+	_voices = null
+
+
+# The local quad's sound is delayed (and doppler-shifted) only when heard from the pilot.
+func _local_delay() -> bool:
+	return _delay and not _onboard
+
+
 # ---- the pilot ----
 
+# Where the listener is: the pilot at the spawn point, or with listen_from = quad the own quad (facing its way).
 func _pilot() -> Vector3:
+	if _onboard and _local != null and is_instance_valid(_local.node):
+		var b := _local.node.global_transform.basis
+		var fq := -b.z
+		fq.y = 0.0
+		if fq.length() > 0.2:
+			_forward = fq.normalized()
+		return _local.node.global_position
 	if _gs == null or not is_instance_valid(_gs):
 		_gs = get_node_or_null("/root/ZGamestate")
 	var rt = _gs.get("respawn_transform") if _gs != null else null
@@ -344,6 +431,7 @@ func _free_src(s: Src, keep_bus: bool = true) -> void:
 func _attach_local() -> void:
 	if _local != null and is_instance_valid(_local.node) and is_instance_valid(_qa):
 		return
+	_voices_stop()
 	if _local != null:
 		sources.erase(_local)
 		_free_src(_local)
@@ -432,6 +520,7 @@ func _quiet_remotes() -> void:
 
 
 func _drop_all() -> void:
+	_voices_stop()
 	if _qa != null and is_instance_valid(_qa):
 		_qa.bus = _qa_bus_orig
 	for s in sources.duplicate():
@@ -499,7 +588,8 @@ func _step(s: Src, dt: float, pilot: Vector3, do_rays: bool, focus: bool) -> voi
 	var src := pos
 	s.doppler = 1.0
 	s.delay = 0.0
-	if _delay:
+	var onboard := _onboard and not s.remote      # the own quad, listened to from on board
+	if _delay and not onboard:
 		if s.remote:
 			_record(s, pos, pitch, vol)
 		var te := _emitted(s, pilot)
@@ -529,7 +619,7 @@ func _step(s: Src, dt: float, pilot: Vector3, do_rays: bool, focus: bool) -> voi
 	s.azimuth = rad_to_deg(az)
 	var behind := maxf(0.0, -cos(az)) * hfrac if _stereo else 0.0
 	# walls
-	if do_rays:
+	if do_rays and not onboard:
 		s.occl_target = _blocked(s, pilot, src)
 	elif not _walls:
 		s.occl_target = 0.0
@@ -545,6 +635,13 @@ func _step(s: Src, dt: float, pilot: Vector3, do_rays: bool, focus: bool) -> voi
 	fc *= 1.0 - 0.3 * behind
 	# stereo
 	var p := clampf(_width * sin(az) * hfrac, -1.0, 1.0) if _stereo else 0.0
+	if onboard:
+		# the microphone on the quad: as the game plays it
+		s.occl_target = 0.0
+		s.occl = 0.0
+		g = 0.0
+		fc = 20000.0
+		p = 0.0
 	var k := 1.0 - exp(-dt / SMOOTH_S)
 	s.gain += (g - s.gain) * k
 	s.cutoff = exp(lerpf(log(s.cutoff), log(fc), k))
@@ -679,5 +776,6 @@ func report() -> Array:
 		out.append({"distance": s.distance, "gain_db": s.gain, "cutoff_hz": s.set_cutoff, "pan": s.panv,
 			"pitch": s.pitch, "game_pitch": s.game_pitch, "doppler": s.doppler, "delay": s.delay,
 			"walls": s.occl, "azimuth": s.azimuth, "remote": s.remote,
-			"playing": s.player.playing if is_instance_valid(s.player) else false})
+			"playing": s.player.playing if is_instance_valid(s.player) else false,
+			"voices": s == _local and _voices != null and is_instance_valid(_voices)})
 	return out
