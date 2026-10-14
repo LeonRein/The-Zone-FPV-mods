@@ -55,6 +55,16 @@ extends Node
 ## Each physics tick it adds these as forces at the props of the quad the
 ## game flies (its RigidBody3D) - not while disarmed, paused or in turtle
 ## mode, and never to other players' quads.
+##
+## A quad another mod flies with a flight model of its own (real_quad) is
+## not pushed: that mod calls set_model() every physics tick with the
+## model's thrust, props and frame, and the drone's wash and wake, and for
+## the next tick dirty_air works out the air for it instead - the old wake's
+## flow and gusts at each prop (prop_axial, wake_flow), the descent curve
+## and ring state (descent_mean, prop_vrs), floor and ceiling (ground,
+## ceiling) - which the model puts into its own props. Then it applies no
+## forces and no shake (the model's flight controller shakes for real).
+## Stop calling it and the quad is the game's again, as before.
 
 const RHO := 1.225
 const DEFAULTS := {"descent": 1.0, "wake": 1.0, "wash": 1.0, "shake": 0.0, "ground_effect": 1.0, "ceiling_effect": 1.0}
@@ -108,6 +118,16 @@ var gusts := 0.0                # the thrust fluctuation it gives the props (rms
 var wash_level := 0.0           # how rough the air is: 1 = the heart of its wake (flight_controller's gyro)
 var vrs_sigma := 0.0            # each prop's thrust fluctuation in its own wake (rms, fraction)
 var puffs := 0                  # puffs of wake alive
+# for a flight model of another mod (set_model), in the prop order of
+# _local (front left, front right, rear left, rear right); worked out on
+# the tick model_air_frame (Engine.get_physics_frames()), not while disarmed
+var descent_mean := 1.0         # mean thrust ratio from the descent and ring state (without the old wake's flow)
+var prop_axial := [0.0, 0.0, 0.0, 0.0]  # air speed along the thrust axis at each prop beyond the centre's (wake_flow): the old wake's flow there and its gusts (m/s, + = up through the prop)
+var prop_vrs := [0.0, 0.0, 0.0, 0.0]    # each prop's thrust fluctuation in its own wake (fraction, mean 0)
+var model_air_frame := -1
+var _model := {}                # the last set_model()
+var _model_frame := -10
+var _model_geom := ""
 
 var _core: Node = null
 var _scene: Node = null
@@ -168,12 +188,38 @@ static func describe(d: Dictionary) -> String:
 		int(round(float(d["wheelbase_mm"])))]
 
 
+## For a flight model of another mod that flies the quad itself (real_quad),
+## every physics tick: m has thrust (N, all props, from its last tick),
+## prop_mm, wheelbase_mm, ducted (its quad's, in place of the drones mod's),
+## wash and wake (the drone's own, in place of 1; times settings.cfg's), and
+## gust (times the old wake's turbulence, WAKE_TURB; default 1). On
+## the next tick dirty_air leaves the body alone and works out the air for
+## the model (descent_mean, prop_axial, prop_vrs, wake_flow, ground,
+## ceiling; model_air_frame says which tick). Not calling it for a tick
+## hands the quad back.
+func set_model(m: Dictionary) -> void:
+	_model = m
+	_model_frame = Engine.get_physics_frames()
+
+
+## Whether a flight model flies the quad (set_model() on the last tick)
+func model_flown() -> bool:
+	return Engine.get_physics_frames() - _model_frame <= 1
+
+
 ## The drone flown: the drones mod's figures for it (an added drone's from
-## its block, the rest from the drone it is built on)
+## its block, the rest from the drone it is built on), with a flight
+## model's props and frame in place of them while one flies it
 func use_drone(vehicle_id: String) -> void:
 	drone_id = vehicle_id
 	_spec_gen = _specs.generation()
 	drone = _specs.figures(vehicle_id, _core)
+	_model_geom = ""
+	if model_flown():
+		for k in ["prop_mm", "wheelbase_mm", "ducted"]:
+			if _model.has(k):
+				drone[k] = _model[k]
+		_model_geom = _geom_key()
 	_r = clampf(float(drone["prop_mm"]), 10.0, 400.0) / 2000.0
 	_area = 4.0 * PI * _r * _r
 	var s := clampf(float(drone["wheelbase_mm"]), 20.0, 1000.0) / 1000.0 / (2.0 * sqrt(2.0))
@@ -181,6 +227,10 @@ func use_drone(vehicle_id: String) -> void:
 	_local = [Vector3(-s, 0, -s), Vector3(s, 0, -s), Vector3(-s, 0, s), Vector3(s, 0, s)]
 	_frame = s * sqrt(2.0) + _r
 	clear_wake()
+
+
+func _geom_key() -> String:
+	return "%s %s %s" % [str(_model.get("prop_mm", "")), str(_model.get("wheelbase_mm", "")), str(_model.get("ducted", ""))] if model_flown() else ""
 
 
 ## The props' hover wake speed (m/s) for a quad of this weight
@@ -364,9 +414,10 @@ func _physics_process(dt: float) -> void:
 	var p := _player
 	if not (p is RigidBody3D) or p.get("physics_handler") != null or not p.has_method("get_thrust_at_rpm"):
 		return
+	var ext := model_flown()
 	# the game loads the drone's settings on its first tick of a flight, and
 	# drops them while paused: its thrust cannot be asked for until then
-	if not (p.get("_SETTINGS") is Dictionary):
+	if not ext and not (p.get("_SETTINGS") is Dictionary):
 		return
 	var body := p as RigidBody3D
 	var gs := get_node_or_null("/root/ZGamestate")
@@ -375,12 +426,13 @@ func _physics_process(dt: float) -> void:
 	if _specs == null:
 		return
 	var vid := _vehicle_id()
-	if vid != drone_id or _specs.generation() != _spec_gen:
+	if vid != drone_id or _specs.generation() != _spec_gen or _geom_key() != _model_geom:
 		use_drone(vid)
 		if get_parent() != null and get_parent().has_method("drone_changed"):
 			var vh := hover_wake(float(body.mass))
-			get_parent().call("drone_changed", "flying %s: %s; its wake at hover %.1f m/s, so prop wash falling at about %.1f-%.1f m/s at hover throttle, worst at %.1f; its own wash %s and wake %s" % [
-				drone["name"], describe(drone), vh, 0.5 * vh, 1.7 * vh, -VRS_CENTRE * vh, str(drone.get("wash", 1.0)), str(drone.get("wake", 1.0))])
+			get_parent().call("drone_changed", "flying %s: %s; its wake at hover %.1f m/s, so prop wash falling at about %.1f-%.1f m/s at hover throttle, worst at %.1f; its own wash %s and wake %s%s" % [
+				drone["name"], describe(drone), vh, 0.5 * vh, 1.7 * vh, -VRS_CENTRE * vh, str(_model.get("wash", 1.0) if ext else drone.get("wash", 1.0)),
+				str(_model.get("wake", 1.0) if ext else drone.get("wake", 1.0)), " (a flight model flies it: its props, frame, wash and wake; the air goes into its props, no forces)" if ext else ""])
 	if dt <= 0.0:
 		return
 	_clock += dt
@@ -396,10 +448,15 @@ func _physics_process(dt: float) -> void:
 		gusts = 0.0
 		wash_level = 0.0
 		vrs_sigma = 0.0
+		descent_mean = 1.0
+		for i in 4:
+			prop_axial[i] = 0.0
+			prop_vrs[i] = 0.0
 		_flying = false
 		_unshake(body)
 		return
-	var thrust := maxf(float(p.call("get_thrust_at_rpm", float(p.get("current_motor_rpm")))), 0.0)
+	var thrust := maxf(float(_model.get("thrust", 0.0)), 0.0) if ext \
+		else maxf(float(p.call("get_thrust_at_rpm", float(p.get("current_motor_rpm")))), 0.0)
 	var basis := body.global_transform.basis
 	var up := basis.y.normalized()
 	var wind = gs.get("current_wind_effect") if gs != null else null
@@ -408,7 +465,7 @@ func _physics_process(dt: float) -> void:
 	var vh := sqrt(maxf(thrust, 1e-4) / (2.0 * RHO * _area))
 
 	# the wake left behind, at the quad's centre and each prop
-	var ws := float(cfg["wake"]) * float(drone.get("wake", 1.0))
+	var ws := float(cfg["wake"]) * float(_model.get("wake", 1.0) if ext else drone.get("wake", 1.0))
 	var pts: Array[Vector3] = [origin, origin + basis * _local[0], origin + basis * _local[1],
 		origin + basis * _local[2], origin + basis * _local[3]]
 	var old := [0.0, 0.0, 0.0, 0.0, 0.0]
@@ -440,6 +497,7 @@ func _physics_process(dt: float) -> void:
 		wake = exp(-pow((_x - VRS_CENTRE) / VRS_WIDTH, 2.0)) * maxf(0.0, 1.0 - vx / vh)
 		mean *= 1.0 - VRS_LOSS * wake
 	mean = 1.0 + (mean - 1.0) * strength
+	descent_mean = mean
 	# old wake blowing through the props as a climb would (the game's own
 	# thrust already counts the quad's climb)
 	var climb := maxf(vz, 0.0) - maxf(air.dot(up), 0.0)
@@ -458,7 +516,7 @@ func _physics_process(dt: float) -> void:
 	var ft := clampf(0.5 * vh / (TAU * _frame), 1.0, 40.0)
 	var kt := minf(dt * TAU * ft, 1.0)
 	_tilt += -_tilt * kt + Vector2(_gauss(), _gauss()) * sqrt(2.0 * kt)
-	var wash := float(cfg["wash"]) * float(drone.get("wash", 1.0))
+	var wash := float(cfg["wash"]) * float(_model.get("wash", 1.0) if ext else drone.get("wash", 1.0))
 	var rough := 1.0 if bool(drone.get("ducted", true)) else OPEN_ROUGH
 	var sigma := VRS_SIGMA * rough * wake * strength * wash
 	vrs_sigma = sigma
@@ -510,6 +568,13 @@ func _physics_process(dt: float) -> void:
 		var lp: Vector3 = _local[i]
 		var side := Vector2(signf(lp.x), signf(lp.z)) / sqrt(2.0)
 		var vrs: float = sqrt(1.0 - VRS_TILT) * _noise[i] + sqrt(VRS_TILT) * _tilt.dot(side)
+		if ext:
+			# for the model: the air itself (its flow and gusts along the axis, m/s), and the ring
+			# state's fluctuation; the model's props turn them into thrust
+			prop_axial[i] = (here - wake_flow).dot(up) + WAKE_TURB * float(_model.get("gust", 1.0)) * edge[i + 1] * ws * wash * rough \
+				* (sqrt(shared) * _gust_all + sqrt(1.0 - shared) * _gust[i])
+			prop_vrs[i] = sigma * vrs
+			continue
 		var ratio: float = mean * (1.0 + sigma * vrs) * inflow * clampf(1.0 + gust, 0.0, 2.0) * ground[i] * ceiling[i]
 		var extra: float = thrust * 0.25 * (ratio - 1.0)
 		if extra != 0.0:
@@ -519,6 +584,8 @@ func _physics_process(dt: float) -> void:
 			torque += (at - origin).cross(f)
 
 	wash_level = clampf((sigma + gusts) / (VRS_SIGMA * rough), 0.0, 2.0)
+	if ext:
+		model_air_frame = Engine.get_physics_frames()
 
 	# leave some wake: not while falling along the thrust axis (that wake
 	# stays round the props, and is the vortex ring state above)
@@ -530,7 +597,11 @@ func _physics_process(dt: float) -> void:
 			_wlast_p = origin
 
 	# prop wash shake: a resonator around SHAKE_HZ driven by noise, at unit
-	# variance, sized by how deep in the wake the quad is
+	# variance, sized by how deep in the wake the quad is (none for a flight
+	# model: its own flight controller shakes)
+	if ext:
+		_unshake(body)
+		return
 	var amp := deg_to_rad(SHAKE_DEG) * wake * float(cfg["shake"])
 	var w0 := TAU * SHAKE_HZ
 	var steps := 4

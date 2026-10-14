@@ -34,6 +34,10 @@ extends Node
 ## does: the weak corner's motor spins up to make up, and runs out first in
 ## a punch.
 ##
+## With real_quad (a flight model flying the quad) the same goes through the model:
+## its set_model() hands the props' thrust factors and out-of-balance over, and this
+## then neither pushes the body with a force nor turns it to shake (see set_model()).
+##
 ## New props: at every respawn (fresh_props_on_respawn), and on picking
 ## another drone.
 
@@ -144,6 +148,10 @@ var _have_pos := false
 var _spawn_last := Vector3.ZERO
 var _have_spawn := false
 var _at_spawn := false
+# a flight model that flies the quad itself (real_quad) calls set_model() each tick
+const BF_OF := [3, 1, 2, 0]     # a prop (the order of NAMES) -> that corner's motor in Betaflight's order, and back
+var _model_frame := -100
+var _model_spin := [0.0, 0.0, 0.0, 0.0]
 
 
 ## Reads settings.cfg [prop_damage]. Returns a line for status.txt.
@@ -220,6 +228,33 @@ static func corner(local: Vector3) -> int:
 ## (flight_controller asks, for each of its motors)
 func factor_at(local: Vector3) -> float:
 	return float(thrust_factor[corner(local)])
+
+
+## For a flight model that flies the quad itself (real_quad): called once a tick with each
+## rotor's spin - how hard it is turning, 0..1.2, its thrust against full thrust - in
+## Betaflight's motor order (rear right, front right, rear left, front left). Returns the
+## props' state in that order: {"thrust": the thrust of each against a new prop's (0 = broken
+## off), "imbalance": how far out of balance each is, 0..1, the vibration setting in it}. The
+## model puts the thrust into its rotors and the imbalance into the gyro its flight controller
+## reads. While a model calls this, the missing thrust is not taken off the body with a force
+## and the quad is not turned about to shake (the model has its own motors and gyro: nothing
+## is counted twice); hits, clips, kicks and bounces still push it, and the wear of a hit goes
+## with the spin handed over. Nothing changes for a quad no model flies.
+func set_model(spin: Array) -> Dictionary:
+	_model_frame = Engine.get_physics_frames()
+	var thrust := []
+	var imb := []
+	for i in 4:
+		_model_spin[i] = float(spin[BF_OF[i]]) if spin.size() >= 4 else 0.0
+	for k in 4:
+		thrust.append(float(thrust_factor[BF_OF[k]]))
+		imb.append(float(imbalance[BF_OF[k]]))
+	return {"thrust": thrust, "imbalance": imb}
+
+
+# Whether a flight model is flying the quad (it called set_model() within the last ticks)
+func _modelled() -> bool:
+	return Engine.get_physics_frames() - _model_frame <= 2
 
 
 func _update_factors() -> void:
@@ -376,10 +411,15 @@ func _physics_process(dt: float) -> void:
 	var armed: bool = p.has_method("is_armed") and bool(p.call("is_armed"))
 	_check_respawn(body, armed)
 	var fc = p.get("zm_fc")
+	var modelled := _modelled()
 	# each prop's blade energy, against full throttle's: its speed squared,
 	# which is its thrust against full thrust
 	var spin := [0.0, 0.0, 0.0, 0.0]
-	if armed and p.get("turtle_mode_active") != true and p.has_method("get_thrust_at_rpm"):
+	if modelled:
+		if armed:
+			for i in 4:
+				spin[i] = clampf(float(_model_spin[i]), 0.0, 1.2)
+	elif armed and p.get("turtle_mode_active") != true and p.has_method("get_thrust_at_rpm"):
 		var full := 0.0
 		var stt = p.get("_SETTINGS")
 		if stt is Dictionary and stt.has("adjustable_settings"):
@@ -507,7 +547,7 @@ func _physics_process(dt: float) -> void:
 	for i in 4:
 		lvl += float(imbalance[i]) * spin[i]
 	vibration_level = lvl
-	if fc == null and armed and p.get("turtle_mode_active") != true and p.has_method("get_thrust_at_rpm"):
+	if fc == null and not modelled and armed and p.get("turtle_mode_active") != true and p.has_method("get_thrust_at_rpm"):
 		# the game's thrust is at the centre, a quarter each prop's
 		var quarter := maxf(float(p.call("get_thrust_at_rpm", float(p.get("current_motor_rpm")))), 0.0) * 0.25
 		var up := xf.basis.y.normalized()
@@ -517,7 +557,7 @@ func _physics_process(dt: float) -> void:
 				var f := -up * lost
 				body.apply_force(f, xf.basis * (_local[i] as Vector3))
 				force += f
-	_shake(body, dt, lvl if armed else 0.0)
+	_shake(body, dt, lvl if armed and not modelled else 0.0)     # a model shakes its own gyro instead
 
 
 # flight_controller's motor for the prop at corner i

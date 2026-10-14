@@ -33,6 +33,16 @@ extends Node
 ## section of settings.cfg per quad), picked from the quad you have selected
 ## and swapped in fresh when you change quad. A drone added by the drones mod
 ## gets the battery its block sets, the rest from its base quad's pack.
+##
+## A quad another mod flies with a flight model that has motors of its own
+## (real_quad) drives the pack itself: it calls external_pack() with its
+## craft's battery when it takes the quad, then every physics tick drive()
+## with its motors' current, and runs its motors on source_volts() and
+## resistance(soc()) - so the voltage under load shown (zm_battery) is the
+## one its motors get. Meanwhile the current is not worked out from the
+## game's thrust and BAT_CURRENT_VOLTAGE is left alone; draining, fresh
+## packs on respawn and settings are as for any quad. external_release()
+## hands the quad back (the same pack flies on until the quad changes).
 
 const DEFAULTS := {
 	"sag_effect": 1.0,
@@ -112,6 +122,9 @@ var _spawn_last := Vector3.ZERO
 var _have_spawn := false
 var _r_key := false
 var _sw_last = null
+# a pack driven by another mod's flight model (external_pack)
+var external := false
+var _ext := {}               # vehicle id -> the battery it handed in
 
 
 ## Reads settings.cfg: [battery] and a section per quad. Returns a line for
@@ -174,6 +187,12 @@ func use_pack(vehicle_id: String) -> void:
 		pack = _preset_pack(vehicle_id)
 	if pack.is_empty():
 		pack = packs["other"]
+	if _ext.has(vehicle_id):
+		# a flight model's own battery, over what it leaves out
+		pack = pack.duplicate()
+		for k in _ext[vehicle_id]:
+			if pack.has(k):
+				pack[k] = _ext[vehicle_id][k]
 	var mohm := float(pack["resistance_mohm"])
 	if mohm <= 0.0:
 		# about 20 mOhm for a 550 mAh whoop cell and its lead; bigger packs of
@@ -279,6 +298,42 @@ func step(amps: float, dt: float) -> void:
 	cell_voltage = maxf(ocv(s) - amps * r - _vf - _vs, 0.0)
 
 
+## Another mod's flight model takes the quad (real_quad): from now on it
+## drives the pack with drive(). spec is its craft's battery, keys as in
+## PACKS (name, capacity_mah, cells, lihv, resistance_mohm, idle_amps; the
+## rest from the pack this quad would have). A fresh pack of it goes in,
+## unless the one in use already is it (the model took the quad back after a
+## pause).
+func external_pack(vehicle_id: String, spec: Dictionary) -> void:
+	external = true
+	var same := pack_id == vehicle_id and not pack.is_empty()
+	for k in spec:
+		same = same and pack.has(k) and str(pack[k]) == str(spec[k])
+	_ext[vehicle_id] = spec
+	if not same:
+		_switch_to(vehicle_id)
+
+
+## The flight model hands the quad back: the current comes from the game's
+## thrust again. The same pack flies on until the quad changes.
+func external_release() -> void:
+	external = false
+	_ext.erase(pack_id)
+
+
+## One physics tick of the pack driven by a flight model: its motors' mean
+## current (amps) over dt, plus this pack's idle_amps.
+func drive(motor_amps: float, dt: float) -> void:
+	step(maxf(motor_amps, 0.0) + float(pack["idle_amps"]), dt)
+
+
+## A cell's voltage behind its ohmic resistance (volts): the resting voltage
+## less the polarisation. Under a current I it gives
+## source_volts() - I * resistance(soc()).
+func source_volts() -> float:
+	return maxf(ocv(soc()) - _vf - _vs, 0.0)
+
+
 ## Current for a thrust share (0 = motors stopped, 1 = the quad's full thrust).
 func amps_for(share: float, armed: bool) -> float:
 	var a := float(pack["idle_amps"])
@@ -341,6 +396,11 @@ func _physics_process(dt: float) -> void:
 	var t = p.get("throttle_input")
 	var throttle := clampf(float(t), 0.0, 1.0) if t != null else 0.0
 	_check_respawn(p, armed)
+	if external:
+		# a flight model drives the pack (drive()) and has motors of its own
+		thrust_share = 0.0
+		_release()
+		return
 	# how hard the motors are working, from the game's own thrust
 	var share := throttle
 	var st = p.get("_SETTINGS")

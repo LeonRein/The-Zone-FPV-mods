@@ -83,6 +83,12 @@ WHAT A DAMAGED PROP DOES
   game's own rotation control holds the quad level against a weak corner, so
   a damaged prop mostly costs thrust.
 
+  With real_quad, a drone a flight model flies gets the same through the
+  model: the worn prop's thrust loss in its rotor, a broken prop none, and the
+  out-of-balance as vibration in the gyro its Betaflight loop reads (real_quad
+  calls prop_damage's set_model() each tick; prop_damage then pushes and shakes
+  that quad no more). Hits, clips and kicks still push it.
+
 
 NEW PROPS
   Every respawn puts new props on (fresh_props_on_respawn=false: only

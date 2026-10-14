@@ -99,6 +99,16 @@ FOR MOD AUTHORS
   capacity_mah and pack (e.g. "6S 1300 mAh LiPo").
 
 
+FLIGHT MODELS (real_quad)
+  A mod that flies the quad with a flight model whose motors draw current
+  (real_quad) drives the pack instead of the game's thrust: external_pack()
+  with its craft's battery when it takes the quad, drive(amps, dt) every
+  tick, and its motors run on source_volts() and resistance(soc()) - so the
+  voltage shown is the one its motors get (see battery.gd). The game's
+  battery voltage is left alone meanwhile; draining, fresh packs on respawn
+  and the settings here are as for any quad.
+
+
 TROUBLESHOOTING
   battery_sag/status.txt is rewritten at every launch and shows the pack in use;
   zonemods/status.txt lists which mods loaded.

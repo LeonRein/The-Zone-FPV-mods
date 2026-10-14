@@ -73,6 +73,10 @@ INSTALL
   zonemods/README.txt. If you list mods in override.cfg, put mode_3d after
   flight_controller and before motor_response.
 
+  With real_quad (flight models of real quads): real_quad does not start while
+  mode_3d is in effect - 3D mode is a mixer the models do not have - and
+  says so in its status.txt. Every drone is then flown by mode_3d.
+
 
 UNINSTALL
   Set enabled=false at the top of mode_3d/settings.cfg, or delete the mode_3d
