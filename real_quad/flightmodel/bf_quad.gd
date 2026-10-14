@@ -66,6 +66,7 @@ var volts_per_pack_volt: float = 1.0 # model volts per pack volt (bf_model: batt
 # --- the outside air (dirty_air, through bf_model.apply_air; held for a physics tick)
 var has_air := false                 # false: clean air (the prop's own inflow both ways, no prop wash)
 var air_vel := Vector3()             # air velocity at the quad (world) [m/s]: the old wake there
+var wind := Vector3()                # the game's wind (world) [m/s]: moving air, on every path (with and without dirty_air); kept by clear_air()
 var air_mean: float = 1.0            # mean thrust ratio descending (descent curve, vortex ring state)
 var air_axial := PackedFloat64Array([0, 0, 0, 0])   # axial air speed at each prop beyond the centre's (wake flow, gusts) [m/s], + = up through the prop
 var air_fluct := PackedFloat64Array([0, 0, 0, 0])   # each prop's relative thrust fluctuation (vortex ring state)
@@ -175,7 +176,7 @@ func _prop_load(i: int, v_axial: float) -> float:
 ## and returns the world linear acceleration including gravity.
 func step(u: PackedFloat64Array, dt: float, basis: Basis, vel: Vector3, _pos: Vector3, _armed: bool) -> Vector3:
 	# velocity relative to the air (which moves where the quad flies through its old wake)
-	var vb := local_to_flu(basis.transposed() * (vel - air_vel))     # (orthonormal: transposed = inverse)
+	var vb := local_to_flu(basis.transposed() * (vel - air_vel - wind))     # (orthonormal: transposed = inverse)
 	var v_ax := vb.z
 	# battery: the pack's voltage under the motors' current
 	var i_proxy := 0.0

@@ -62,6 +62,8 @@ var _rx_frame_us: int = 4000         # from fc.json rx_rate_hz
 var _mq := PackedFloat64Array()      # motor command latency line: a ring of _mq_n commands (4 each)
 var _mq_n: int = 1
 var _mq_i: int = 0
+var _cd_area0 := Vector3()           # the identified body drag (cd_area), before the game's drag multipliers
+var _pkg_rates := {}                 # fc.json's rates (rates_type, rc_rates, rates, rc_expo), for use_package_rates()
 var _vel := Vector3()                # world velocity at the end of the last tick (internal state)
 var _set_lin := Vector3()            # velocities handed to Godot last tick (to detect contacts)
 var _set_ang := Vector3()
@@ -79,6 +81,9 @@ func _init(p_package_dir: String) -> void:
 		return
 	_rx_frame_us = maxi(1, roundi(1e6 / maxf(float(fc_cfg.get("rx_rate_hz", 250.0)), 1.0)))
 	quad = Quad.new(plant_params)
+	_cd_area0 = quad.cd_area
+	for k in ["rates_type", "rc_rates", "rates", "rc_expo"]:
+		_pkg_rates[k] = fc_cfg[k].duplicate() if fc_cfg[k] is Array else fc_cfg[k]
 	var bat: Dictionary = craft.get("battery", {}) if craft.get("battery", {}) is Dictionary else {}
 	cells = clampi(int(bat.get("cells", craft.get("cells", roundi(quad.batt_v0 / CELL_FULL_LIPO)))), 1, 12)
 	lihv = bool(bat.get("lihv", false))
@@ -129,6 +134,69 @@ func _drag_per_s_factor() -> float:
 func get_package_linear_drag() -> float:
 	var d := float(craft.get("linear_drag", 0.0))
 	return d if d > 0.0 else get_default_linear_drag()
+
+
+## The game's drag multipliers (Physics menu, surface_area_x/y/z_multi, percent; 100 = unchanged) scale the
+## body drag: the game's z (front/back axis of the body) is FLU x, its x (left/right) FLU y, its y (top/bottom) FLU z.
+func set_drag_multipliers(game_x: float, game_y: float, game_z: float) -> void:
+	quad.cd_area = _cd_area0 * Vector3(maxf(game_z, 0.0), maxf(game_x, 0.0), maxf(game_y, 0.0)) * 0.01
+
+
+## The game's wind (ZGamestate.current_wind_effect, world, m/s - its gusts and shelter included) as the air's
+## own velocity: the quad flies through it, for the body's drag and the props' inflow.
+func set_wind(world: Vector3) -> void:
+	quad.wind = world
+
+
+## The game's own Rates (ZSettings.RATES: {type, roll, pitch, yaw: Vector3}) as the controller's rates. The game's
+## three types: "actual" (center, max, expo) -> Betaflight ACTUAL; "betaflight" (RC rate, rate, expo) -> BETAFLIGHT;
+## "kiss" (RC rate, rate, curve) -> KISS. Returns false (nothing changed) for a type this does not know.
+func set_game_rates(r: Dictionary) -> bool:
+	var type := str(r.get("type", ""))
+	var rc_rates := []
+	var rates := []
+	var expo := []
+	for axis in ["roll", "pitch", "yaw"]:
+		var v: Vector3 = r.get(axis, Vector3.ZERO)
+		if type == "actual":
+			rc_rates.append(v.x * 0.1)
+			rates.append(v.y * 0.1)
+			expo.append(v.z * 100.0)
+		elif type == "betaflight" or type == "kiss":
+			rc_rates.append(v.x * 100.0)
+			rates.append(v.y * 100.0)
+			expo.append(v.z * 100.0)
+		else:
+			return false
+	fc_cfg["rates_type"] = {"actual": 3, "betaflight": 0, "kiss": 1}[type]
+	fc_cfg["rc_rates"] = rc_rates
+	fc_cfg["rates"] = rates
+	fc_cfg["rc_expo"] = expo
+	fc.update_rates()
+	return true
+
+
+## The rates of fc.json again
+func use_package_rates() -> void:
+	for k in _pkg_rates:
+		fc_cfg[k] = _pkg_rates[k].duplicate() if _pkg_rates[k] is Array else _pkg_rates[k]
+	fc.update_rates()
+
+
+## The highest rate the sticks ask for now [deg/s] (the game's OSD readout curr_max_rate)
+func current_max_rate_dps(rc: Dictionary) -> float:
+	var m := 0.0
+	for pair in [["roll", 0], ["pitch", 1], ["yaw", 2]]:
+		var c := clampf(float(rc.get(pair[0], 0.0)), -1.0, 1.0)
+		m = maxf(m, absf(fc.apply_rates(pair[1], c, absf(c))))
+	return m
+
+
+## Rotor speed at full throttle in clean air on a full pack [rpm] (the top of the sound's rpm scale)
+func full_rpm() -> float:
+	if _full_w < 0.0:
+		_full_w = maxf(quad.full_speed(), 1.0)
+	return _full_w * 60.0 / TAU
 
 
 ## Thrust factor of the rotor at Betaflight motor index i (0 rear right, 1 front right, 2 rear
@@ -339,14 +407,24 @@ func uses_custom_integrator() -> bool:
 	return true
 
 
+## The modelled quad's mass and inertia on the body (the host re-applies them every tick: the game sets
+## the mass of its Physics menu again whenever it reloads its settings)
+func apply_mass(body: RigidBody3D) -> void:
+	var m := float(plant_params.mass)
+	if not is_equal_approx(body.mass, m):
+		body.mass = m
+	# FLU inertia -> Godot local axes: X = -left (pitch axis), Y = up (yaw), Z = -forward (roll)
+	var i := Vector3(float(plant_params.Iyy), float(plant_params.Izz), float(plant_params.Ixx))
+	if body.inertia != i:
+		body.inertia = i
+
+
 func configure_body(body: RigidBody3D) -> void:
 	if not valid:
 		return
 	body.custom_integrator = true
 	body.can_sleep = false
-	body.mass = float(plant_params.mass)
-	# FLU inertia -> Godot local axes: X = -left (pitch axis), Y = up (yaw), Z = -forward (roll)
-	body.inertia = Vector3(float(plant_params.Iyy), float(plant_params.Izz), float(plant_params.Ixx))
+	apply_mass(body)
 	body.center_of_mass_mode = RigidBody3D.CENTER_OF_MASS_MODE_CUSTOM
 	body.center_of_mass = Vector3.ZERO
 	body.linear_damp_mode = RigidBody3D.DAMP_MODE_REPLACE
