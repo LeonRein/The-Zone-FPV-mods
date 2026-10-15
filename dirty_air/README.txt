@@ -133,6 +133,12 @@ FLIGHT MODELS (real_quad)
   No forces and no shake then; the settings here apply as for every drone.
   All other drones are as before.
 
+  Away from the game, a flight model can also fly a made-up flight through
+  this air on its own - no map, high in the open, this mod's own figures
+  rather than your settings.cfg: free_start() and free_tick() in air.gd.
+  real_quad's model builder does that to size its prop wash on your logs.
+  Nothing changes in the game.
+
 
 MULTIPLAYER AND RACES
   Only the quad you fly is changed, on your computer.
