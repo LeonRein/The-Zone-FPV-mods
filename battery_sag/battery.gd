@@ -124,6 +124,7 @@ var _vf := 0.0
 var _vs := 0.0
 var _vk := 1.0              # smoothed voltage ratio used for the motors
 var _scene: Node = null
+var _gs: Node = null
 var _player: Node = null
 var _vmax := 22.2
 var _driving := false
@@ -249,8 +250,15 @@ func _switch_to(vehicle_id: String) -> void:
 		get_parent().call("pack_changed", "%s: %s" % [pack["name"], describe(pack)])
 
 
+## The game's ZGamestate autoload (looked for again only when it is gone)
+func _game_state() -> Node:
+	if not is_instance_valid(_gs) or not _gs.is_inside_tree():
+		_gs = get_node_or_null("/root/ZGamestate")
+	return _gs
+
+
 func _vehicle_id() -> String:
-	var gs := get_node_or_null("/root/ZGamestate")
+	var gs := _game_state()
 	var v = gs.get("selected_vehicle_id") if gs != null else null
 	return str(v) if v != null else ""
 
@@ -432,7 +440,7 @@ func _physics_process(dt: float) -> void:
 	if _player == null or not is_instance_valid(_player):
 		_player = null
 		return
-	var gs := get_node_or_null("/root/ZGamestate")
+	var gs := _game_state()
 	if gs != null and gs.get("is_paused") == true:
 		return
 	# the quad chosen in the game's menu; a different one gets its own pack
@@ -481,7 +489,7 @@ func _check_respawn(p: Node, armed: bool) -> void:
 	var pos := (p as Node3D).global_position
 	var at_spawn := false
 	var moved := false
-	var gs := get_node_or_null("/root/ZGamestate")
+	var gs := _game_state()
 	var rt = gs.get("respawn_transform") if gs != null else null
 	if rt is Transform3D:
 		at_spawn = pos.distance_to(rt.origin) < 0.05
@@ -518,7 +526,7 @@ func _input(event: InputEvent) -> void:
 
 
 func _typing() -> bool:
-	var gs := get_node_or_null("/root/ZGamestate")
+	var gs := _game_state()
 	if gs != null and gs.get("is_paused") == true:
 		return true
 	var cs := get_tree().current_scene

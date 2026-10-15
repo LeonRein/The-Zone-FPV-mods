@@ -590,6 +590,14 @@ func _physics_process(dt: float) -> void:
 	# nothing within reach of any of the rays (a sphere round all of them): none of them hits, and
 	# eight rays are dearer than this one look
 	var rays := space != null and (ge > 0.0 or ce > 0.0) and _anything_near(space, origin)
+	# (the same in every prop's turn)
+	var sg_noise := sqrt(2.0 * kg)
+	var sh_a := sqrt(shared)
+	var sh_b := sqrt(1.0 - shared)
+	var sqrt2 := sqrt(2.0)
+	var sqrt_vrs_a := sqrt(1.0 - VRS_TILT)
+	var sqrt_vrs_b := sqrt(VRS_TILT)
+	var gust_k := WAKE_TURB * float(_model.get("gust", 1.0))
 	for i in 4:
 		var at: Vector3 = pts[i + 1]
 		var g := 1.0
@@ -611,21 +619,20 @@ func _physics_process(dt: float) -> void:
 		# the old wake here: its flow through this prop against the centre's
 		# (rocking the quad at the edge of a column), and its gusts
 		var here: Vector3 = odir[i + 1] * old[i + 1] * ws
-		var inflow := clampf(1.0 - slope * (here - wake_flow).dot(-up) / vh, 0.3, 2.0)
 		var sg := minf(slope * WAKE_TURB * edge[i + 1] * ws * wash * rough / vh, 1.0)
-		_gust[i] += -_gust[i] * kg + sqrt(2.0 * kg) * _rng.randfn(0.0, 1.0)
+		_gust[i] += -_gust[i] * kg + sg_noise * _rng.randfn(0.0, 1.0)
 		gusts += sg * 0.25
-		var gust: float = sg * (sqrt(shared) * _gust_all + sqrt(1.0 - shared) * _gust[i])
 		var lp: Vector3 = _local[i]
-		var side := Vector2(signf(lp.x), signf(lp.z)) / sqrt(2.0)
-		var vrs: float = sqrt(1.0 - VRS_TILT) * _noise[i] + sqrt(VRS_TILT) * _tilt.dot(side)
+		var side := Vector2(signf(lp.x), signf(lp.z)) / sqrt2
+		var vrs: float = sqrt_vrs_a * _noise[i] + sqrt_vrs_b * _tilt.dot(side)
 		if ext:
 			# for the model: the air itself (its flow and gusts along the axis, m/s), and the ring
 			# state's fluctuation; the model's props turn them into thrust
-			prop_axial[i] = (here - wake_flow).dot(up) + WAKE_TURB * float(_model.get("gust", 1.0)) * edge[i + 1] * ws * wash * rough \
-				* (sqrt(shared) * _gust_all + sqrt(1.0 - shared) * _gust[i])
+			prop_axial[i] = (here - wake_flow).dot(up) + gust_k * edge[i + 1] * ws * wash * rough * (sh_a * _gust_all + sh_b * _gust[i])
 			prop_vrs[i] = sigma * vrs
 			continue
+		var inflow := clampf(1.0 - slope * (here - wake_flow).dot(-up) / vh, 0.3, 2.0)
+		var gust: float = sg * (sh_a * _gust_all + sh_b * _gust[i])
 		var ratio: float = mean * (1.0 + sigma * vrs) * inflow * clampf(1.0 + gust, 0.0, 2.0) * ground[i] * ceiling[i]
 		var extra: float = thrust * 0.25 * (ratio - 1.0)
 		if extra != 0.0:
