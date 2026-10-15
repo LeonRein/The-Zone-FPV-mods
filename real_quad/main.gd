@@ -313,7 +313,7 @@ func _coexistence(fc: bool) -> void:
 	elif _core.call("get_mod", "prop_damage") != null:
 		lines.append("prop_damage: loaded without props, so the modelled quad's props stay new")
 	if _core.call("get_mod", "pilot_audio") != null:
-		lines.append("pilot_audio: the motor voices follow the model's four rotor speeds")
+		lines.append("pilot_audio: places the quad's sound; the model's four rotor speeds are on the quad as metadata motor_rpm")
 	for l in lines:
 		_say(l)
 
