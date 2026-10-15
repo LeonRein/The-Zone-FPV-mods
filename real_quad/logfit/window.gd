@@ -1,21 +1,25 @@
 extends Control
-## real_quad: the "Build a model from logs" window - pick Betaflight blackbox logs, read what is
-## in them, say what the quad is, build the flight model, fly it. One panel over the pause menu in
-## mod_settings' look (its colours, fonts and sizes), made in code; the work is logfit.gd's:
+## real_quad: the model manager window - every flight model (shipped and yours), the build that is running,
+## a model's report, logs and parameters, and "New model from logs". One panel over the pause menu in
+## mod_settings' look (its colours, fonts and sizes), made in code. Three pages:
+##   overview  the models (grade, name, source, the drones that fly it, disk use), the running build with
+##             its progress, "New model from logs"
+##   new       pick Betaflight blackbox logs, read what is in them, say what the quad is, build
+##   detail    one model: report, logs (add / remove), parameters (the form), fly it on a drone, duplicate,
+##             delete (yours only, asks first), open the folder; a model that comes with real_quad is
+##             read-only ("Duplicate and edit")
+## The window holds no job: builds belong to the mod's model manager (logfit/model_manager.gd, host.manager),
+## so closing and reopening the window keeps them and the pages show their live progress. Only the reading
+## of logs on the "new" page (inspect) runs here, in a Thread polled each frame (so it works while the game
+## is paused):
 ##     inspect(paths: PackedStringArray) -> Dictionary
 ##         {firmware, sessions, fields, prefill {cells, kv, motor_poles, craft_name}, errors, warnings}
-##     build(paths, form: Dictionary, out_dir: String, progress: Callable) -> Dictionary
-##         {ok, grade, errors, warnings, report_md, package_dir, model_id}
-##     cancel()
-## Both run in a Thread (the window polls it each frame, so it works while the game is paused),
-## build reports progress(step_name: String, fraction: float). An error or warning is a String, or a
-## Dictionary {text, fix} (the fix is a line or a CLI block); "big": true marks a banner.
-## The form it gives build(): name, weight_g, cells, pack_type (lipo | lihv | liion), kv, class
-## (whoop | micro | mini | five | seven | ten), zone_vehicle_id and, when filled in, capacity_mah,
-## prop_in, pitch_in, blades, wheelbase_mm, top_speed_kmh, ducted, same_quad, overwrite.
-## host is real_quad's main.gd: user_models_dir(), game_drones(), flown_vehicle(), model_origin(),
-## set_drone_model(). Typing goes to the boxes, not the game: the boxes are in the group
-## "zm_typing", which mod_settings' key guard keeps the game's keys away from.
+## An error or warning is a String, or a Dictionary {text, fix} (the fix is a line or a CLI block);
+## "big": true marks a banner. The form it gives the manager: name, weight_g, cells, pack_type (lipo | lihv |
+## liion), kv, class (whoop | micro | mini | five | seven | ten), zone_vehicle_id and, when filled in,
+## capacity_mah, prop_in, pitch_in, blades, wheelbase_mm, top_speed_kmh, ducted, same_quad (the confirmation).
+## host is real_quad's main.gd: manager, game_drones(), set_drone_model(). Typing goes to the boxes, not the
+## game: the boxes are in the group "zm_typing", which mod_settings' key guard keeps the game's keys away from.
 
 signal closed
 
@@ -24,11 +28,13 @@ const WARN := Color(1.0, 0.78, 0.35)
 const GOOD := Color(0.55, 0.9, 0.55)
 const BAD := Color(1.0, 0.45, 0.4)
 const GROUP := Color(0.75, 0.85, 1.0)
+const _MM := preload("model_manager.gd")
 const LOGFIT := "res://real_quad/logfit/logfit.gd"
 const CFG := "user://real_quad/logfit.cfg"
-const MODELS := "user://real_quad/models"
 const EXTS := ["bbl", "bfl", "txt"]
 const TYPING := "zm_typing"
+const CONFIRM_TEXT := "All logs were flown with the same weight, props and battery"
+const INPUTS_UNKNOWN := "Inputs unknown - add logs to rebuild"
 
 # contract 4.2: weight band (g), cells, default prop D / pitch / blades, pack mAh, ducted, Zone drone
 const CLASSES := {
@@ -63,61 +69,72 @@ const FIELDS := [
 	{"key": "blades", "label": "Blades", "int": true, "min": 2.0, "max": 6.0, "req": false, "note": ""},
 	{"key": "wheelbase_mm", "label": "Wheelbase (mm, motor to motor)", "int": false, "min": 40.0, "max": 1000.0, "req": false, "note": ""},
 	{"key": "top_speed_kmh", "label": "Top speed (km/h)", "int": false, "min": 20.0, "max": 300.0, "req": false,
-		"note": "Only used when the accelerometer cannot tell the body drag."},
+		"note": "Sets the body drag and so the top speed: the logs can rarely tell it (long fast straight passes are needed). Empty = the class default. Rebuild to apply."},
 ]
 
 var host = null                       # real_quad's main.gd
-var logfit_script: Script = null      # logfit.gd, or a stand-in
+var mm = null                         # the model manager (host.manager)
+var logfit_script: Script = null      # logfit.gd for reading the logs, or a stand-in
 var cfg_path := CFG
-var out_root := MODELS
 var hide_when_unpaused := false       # set by real_quad when opened from the pause menu
-var paths := PackedStringArray()
+var paths := PackedStringArray()      # the logs of the new model
 var info := {}                        # inspect()'s answer for paths
-var result := {}                      # build()'s answer
-var stage := "setup"                  # setup | working | result
+var stage := "overview"               # overview | new | detail
+var detail_id := ""
+var detail := {}                      # manager.details(detail_id)
+var pend_add := PackedStringArray()   # logs to add to the model in the detail page
+var pend_rm := {}                     # stored log name -> true: to remove
 
 var _logfit = null
 var _thread: Thread = null
 var _mutex := Mutex.new()
-var _prog := {"step": "", "frac": 0.0}
 var _answer = null
 var _done := false
-var _kind := ""                       # the job running: inspect | build
 var _again := false                   # the files changed while inspecting
-var _cancelled := false
-var _after := []                      # messages about the last build, shown with the findings
-var _t0 := 0
 var _was_paused := false
 var _touched := {}                    # form key -> the player has set it
 var _ctl := {}                        # form key -> its control
 var _errs := {}                       # form key -> its error label
+var _mode := "new"                    # what the form is for: new | edit
+var _baseline := {}                   # the form as the detail page loaded it
 var _drones: Array = []               # [{id, name}]
 var _dialog: FileDialog = null
+var _pick_for := "new"
 var _box: PanelContainer = null
 var _title: Label = null
 var _pages := {}
+var _ov_job: VBoxContainer = null
+var _ov_list: VBoxContainer = null
+var _job_step: Label = null
+var _job_bar: ProgressBar = null
+var _job_elapsed: Label = null
+var _seen_last = null
 var _files_box: VBoxContainer = null
 var _msgs: VBoxContainer = null
 var _form_box: VBoxContainer = null
+var _new_holder: VBoxContainer = null
 var _hint: Label = null
 var _build: Button = null
-var _step: Label = null
-var _bar: ProgressBar = null
-var _elapsed: Label = null
-var _res_box: VBoxContainer = null
-var _report: RichTextLabel = null
-var _use: Button = null
+var _class_note: Label = null
+var _confirm: CheckBox = null
+var _d_head: HBoxContainer = null
+var _d_job: VBoxContainer = null
+var _d_actions: VBoxContainer = null
+var _tabs: TabContainer = null
+var _d_report: VBoxContainer = null
+var _d_logs: VBoxContainer = null
+var _d_params: VBoxContainer = null
+var _d_hint: Label = null
+var _d_foot: HBoxContainer = null
+var _d_step: Label = null
+var _d_bar: ProgressBar = null
 var _use_pick: OptionButton = null
 var _use_note: Label = null
-var _class_note: Label = null
-var _overwrite: CheckBox = null
-var _same: CheckBox = null
-var _same_row: Control = null
+var _confirming_delete := false
 
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
-	set_process(false)
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	var dim := ColorRect.new()
 	dim.color = Color(0, 0, 0, 0.5)
@@ -139,30 +156,29 @@ func _ready() -> void:
 	bar.add_theme_constant_override("separation", 12)
 	col.add_child(bar)
 	_title = Label.new()
-	_title.text = "Build a model from logs"
+	_title.text = "Models"
 	_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_title.add_theme_font_size_override("font_size", int(base * 1.3))
 	bar.add_child(_title)
 	var x := Button.new()
 	x.name = "Close"
 	x.text = " x "
-	x.tooltip_text = "Close (a build keeps running; cancel it first to stop it)"
+	x.tooltip_text = "Close (a build keeps running)"
 	x.pressed.connect(close)
 	bar.add_child(x)
-	for s in ["setup", "working", "result"]:
+	for s in ["overview", "new", "detail"]:
 		var p := VBoxContainer.new()
 		p.name = s.capitalize()
 		p.size_flags_vertical = Control.SIZE_EXPAND_FILL
 		p.add_theme_constant_override("separation", 8)
 		col.add_child(p)
 		_pages[s] = p
-	_build_setup(_pages["setup"])
-	_build_working(_pages["working"])
-	_build_result(_pages["result"])
+	_build_overview(_pages["overview"])
+	_build_new(_pages["new"])
+	_build_detail(_pages["detail"])
 	get_viewport().size_changed.connect(_size)
 	_size()
-	_show("setup")
-	_refresh()
+	_go("overview")
 
 
 func _exit_tree() -> void:
@@ -173,15 +189,17 @@ func _exit_tree() -> void:
 		_thread = null
 
 
-## Opens the window on its first page (what was chosen stays)
+## Opens the window on the overview
 func open() -> void:
 	_was_paused = _paused()
+	if host != null and mm == null:
+		mm = host.manager
 	_drones = host.game_drones() if host != null and host.has_method("game_drones") else []
 	_fill_drones()
 	visible = true
 	set_process(true)
 	_size()
-	_refresh()
+	_go("overview")
 
 
 func close() -> void:
@@ -256,27 +274,215 @@ func _clear(c: Control) -> void:
 		ch.queue_free()
 
 
-func _show(s: String) -> void:
+
+func _go(s: String) -> void:
 	stage = s
 	for k in _pages:
 		(_pages[k] as Control).visible = k == s
+	match s:
+		"overview":
+			_title.text = "Models"
+			_move_form(_new_holder)
+			_refresh_overview()
+		"new":
+			_title.text = "New model from logs"
+			if _mode != "new":
+				_reset_new()
+			_move_form(_new_holder)
+			_refresh()
+		"detail":
+			_title.text = str(detail.get("name", detail_id))
 
 
-# ---- page 1: logs, findings, the quad ----
+func _card() -> PanelContainer:
+	var pc := PanelContainer.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(1, 1, 1, 0.05)
+	sb.set_corner_radius_all(4)
+	sb.set_content_margin_all(8)
+	pc.add_theme_stylebox_override("panel", sb)
+	return pc
 
-func _build_setup(page: VBoxContainer) -> void:
+
+func _grade_color(g: String) -> Color:
+	return GOOD if g in ["A", "B"] else (WARN if g in ["C", "D"] else DIM)
+
+
+func _btn(bname: String, text: String, fn: Callable, tip := "") -> Button:
+	var b := Button.new()
+	b.name = bname
+	b.text = text
+	b.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	if tip != "":
+		b.tooltip_text = tip
+	b.pressed.connect(fn)
+	return b
+
+
+# ---- page 1: the overview ----
+
+func _build_overview(page: VBoxContainer) -> void:
 	var v := _scroll(page)
-	v.add_child(_note("Makes a flight model of your own quad from its Betaflight blackbox logs (Betaflight 2025.12 or newer, 4 motors, bidirectional DShot for the rotor speeds). Pick the logs of this quad: the more of what it does the better, with chirp sweeps best. The model is kept in %s." % _models_path()))
+	v.add_child(_note("The flight models real_quad can fly: the ones that come with it and the ones you make from your own Betaflight blackbox logs (kept in %s). Open one to see how good it is, what to fly next, its logs and parameters." % ProjectSettings.globalize_path(_root())))
+	_ov_job = VBoxContainer.new()
+	_ov_job.name = "Job"
+	_ov_job.add_theme_constant_override("separation", 6)
+	v.add_child(_ov_job)
+	_ov_list = VBoxContainer.new()
+	_ov_list.name = "List"
+	_ov_list.add_theme_constant_override("separation", 6)
+	v.add_child(_ov_list)
+	var foot := HBoxContainer.new()
+	page.add_child(foot)
+	foot.add_child(_btn("NewModel", "  New model from logs  ", func(): _go("new")))
+
+
+func _root() -> String:
+	return mm.root if mm != null else "user://real_quad/models"
+
+
+func _models_path() -> String:
+	return ProjectSettings.globalize_path(_root())
+
+
+func _refresh_overview() -> void:
+	if _ov_list == null or mm == null:
+		return
+	_clear(_ov_job)
+	_clear(_ov_list)
+	_job_step = null
+	_job_bar = null
+	_job_elapsed = null
+	if mm.busy():
+		var c: Dictionary = mm.current()
+		var card := _card()
+		card.name = "JobCard"
+		var h := HBoxContainer.new()
+		h.add_theme_constant_override("separation", 12)
+		card.add_child(h)
+		var side := VBoxContainer.new()
+		side.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		side.add_child(_label("Building %s" % c.name, 1.1, GROUP))
+		_job_step = _label("", 0.95)
+		_job_step.name = "JobStep"
+		side.add_child(_job_step)
+		_job_bar = ProgressBar.new()
+		_job_bar.name = "JobBar"
+		_job_bar.min_value = 0.0
+		_job_bar.max_value = 100.0
+		_job_bar.custom_minimum_size = Vector2(0, 20)
+		side.add_child(_job_bar)
+		_job_elapsed = _note("")
+		_job_elapsed.name = "JobElapsed"
+		side.add_child(_job_elapsed)
+		h.add_child(side)
+		if not bool(c.new):
+			h.add_child(_btn("JobDetails", " Details ", show_detail.bind(str(c.id))))
+		h.add_child(_btn("Cancel", "  Cancel  ", func(): mm.cancel(), "Stops the build; nothing is changed"))
+		_ov_job.add_child(card)
+		_job_update()
+	if not mm.last.is_empty():
+		_ov_job.add_child(_last_card())
+	var rows: Array = mm.list()
+	if rows.is_empty():
+		_ov_list.add_child(_note("No models."))
+	for r in rows:
+		_ov_list.add_child(_model_card(r))
+	_seen_last = mm.last
+
+
+func _last_card() -> Control:
+	var rec: Dictionary = mm.last
+	var ok := bool(rec.get("ok", false))
+	var card := _card()
+	card.name = "LastCard"
+	var h := HBoxContainer.new()
+	h.add_theme_constant_override("separation", 12)
+	card.add_child(h)
+	var side := VBoxContainer.new()
+	side.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var t: String = _MM.notice_text(rec)
+	side.add_child(_label(t, 1.0, GOOD if ok else (DIM if bool(rec.get("cancelled", false)) else BAD)))
+	for e in rec.get("errors", []):
+		var m := message(e)
+		if m.text != "" and not t.ends_with(m.text):
+			side.add_child(_label(m.text, 0.9, BAD))
+		if m.fix != "":
+			side.add_child(_label("Fix: " + m.fix, 0.9))
+	for n in rec.get("notes", []):
+		side.add_child(_note(str(n)))
+	h.add_child(side)
+	if ok:
+		h.add_child(_btn("OpenLast", " Open ", show_detail.bind(str(rec.id))))
+	h.add_child(_btn("Dismiss", " Dismiss ", func():
+		mm.dismiss_last()
+		_refresh_overview()))
+	return card
+
+
+func _model_card(r: Dictionary) -> Control:
+	var card := _card()
+	card.name = "Model_" + str(r.id)
+	var h := HBoxContainer.new()
+	h.add_theme_constant_override("separation", 12)
+	card.add_child(h)
+	var g := Label.new()
+	g.name = "Grade"
+	g.text = str(r.grade) if str(r.grade) != "" else "-"
+	g.custom_minimum_size = Vector2(44, 0)
+	g.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	g.add_theme_font_size_override("font_size", int(get_theme_default_font_size() * 1.8))
+	g.add_theme_color_override("font_color", _grade_color(str(r.grade)))
+	h.add_child(g)
+	var side := VBoxContainer.new()
+	side.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var nm := _label(str(r.name), 1.1)
+	nm.name = "Name"
+	side.add_child(nm)
+	var flies := ", ".join(PackedStringArray((r.drones as Array).map(func(d): return str(d.name))))
+	var bits := PackedStringArray(["comes with real_quad" if r.origin == "shipped" else "yours",
+		"flies on: " + flies if flies != "" else "not flown on any drone", _MM.human_bytes(int(r.bytes))])
+	if r.origin == "user" and not bool(r.inputs):
+		bits.append("inputs unknown")
+	if bool(r.building):
+		bits.append("being rebuilt")
+	var sub := _note(" · ".join(bits))
+	sub.name = "Sub"
+	side.add_child(sub)
+	h.add_child(side)
+	h.add_child(_btn("Details", " Details ", show_detail.bind(str(r.id))))
+	return card
+
+
+## Live progress of the running build (each frame)
+func _job_update() -> void:
+	if mm == null or not mm.busy():
+		return
+	var c: Dictionary = mm.current()
+	var txt := ("Cancelling..." if bool(c.cancelling) else (str(c.step) if str(c.step) != "" else "Starting...")) + " %d %%" % int(round(float(c.frac) * 100.0))
+	if _job_step != null and is_instance_valid(_job_step):
+		_job_step.text = txt
+		_job_bar.value = float(c.frac) * 100.0
+		_job_elapsed.text = "%d s. This takes a few minutes; the game goes on behind it, and may run slower on a weak computer." % int(c.elapsed_s)
+	if stage == "detail" and _d_step != null and is_instance_valid(_d_step):
+		_d_step.text = "%s: %s" % [c.name, txt]
+		_d_bar.value = float(c.frac) * 100.0
+
+
+
+# ---- page 2: new model - logs, findings, the quad ----
+
+func _build_new(page: VBoxContainer) -> void:
+	var top := HBoxContainer.new()
+	top.add_child(_btn("Back", " < Models ", func(): _go("overview")))
+	page.add_child(top)
+	var v := _scroll(page)
+	v.add_child(_note("Makes a flight model of your own quad from its Betaflight blackbox logs (Betaflight 2025.12 or newer, 4 motors, bidirectional DShot for the rotor speeds). Pick the logs of this quad: the more of what it does the better, with chirp sweeps best. The logs are copied into the model's folder, so it can be rebuilt later without the originals."))
 	v.add_child(HSeparator.new())
 	v.add_child(_heading("Logs"))
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 10)
-	var add := Button.new()
-	add.name = "AddFiles"
-	add.text = " Add log files... "
-	add.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	add.tooltip_text = "Pick .bbl, .bfl or .txt blackbox logs (several at once)"
-	add.pressed.connect(_pick_files)
+	var add := _btn("AddFiles", " Add log files... ", func(): _pick_files("new"), "Pick .bbl, .bfl or .txt blackbox logs (several at once)")
 	row.add_child(add)
 	var hint := _note("All of the same quad; a card's .bbl or .bfl, or an OpenLog .txt. CSV exports do not work.")
 	hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -291,10 +497,13 @@ func _build_setup(page: VBoxContainer) -> void:
 	_msgs.name = "Messages"
 	_msgs.add_theme_constant_override("separation", 6)
 	v.add_child(_msgs)
+	_new_holder = VBoxContainer.new()
+	_new_holder.name = "FormHolder"
+	v.add_child(_new_holder)
 	_form_box = VBoxContainer.new()
 	_form_box.name = "Form"
 	_form_box.add_theme_constant_override("separation", 6)
-	v.add_child(_form_box)
+	_new_holder.add_child(_form_box)
 	_build_form(_form_box)
 	var foot := HBoxContainer.new()
 	foot.add_theme_constant_override("separation", 12)
@@ -302,15 +511,8 @@ func _build_setup(page: VBoxContainer) -> void:
 	_hint = _label("", 0.9)
 	_hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	foot.add_child(_hint)
-	_build = Button.new()
-	_build.name = "Build"
-	_build.text = "  Build the model  "
-	_build.pressed.connect(start_build)
+	_build = _btn("Build", "  Build the model  ", func(): start_build())
 	foot.add_child(_build)
-
-
-func _models_path() -> String:
-	return ProjectSettings.globalize_path(out_root)
 
 
 func _build_form(f: VBoxContainer) -> void:
@@ -327,18 +529,16 @@ func _build_form(f: VBoxContainer) -> void:
 		_num_row(f, spec)
 	_options_row(f, "ducted", "Ducted props", ["class default", "yes", "no"], 0, "")
 	_options_row(f, "zone_vehicle_id", "Zone drone", ["(none)"], 0, "The game's drone this model looks like and is flown on. You can pick another when it is built.")
-	_same_row = HBoxContainer.new()
-	_same = CheckBox.new()
-	_same.name = "SameQuad"
-	_same.text = "These logs are all from this quad (flight controller replaced or renamed)"
-	_same_row.add_child(_same)
-	f.add_child(_same_row)
-	_same.toggled.connect(func(_on): _refresh())
-	_overwrite = CheckBox.new()
-	_overwrite.name = "Overwrite"
-	_overwrite.visible = false
-	_overwrite.toggled.connect(func(_on): _validate())
-	f.add_child(_overwrite)
+	_confirm = CheckBox.new()
+	_confirm.name = "ConfirmSame"
+	_confirm.text = CONFIRM_TEXT
+	_confirm.button_pressed = true
+	_confirm.toggled.connect(func(_on):
+		_refresh()
+		_validate())
+	f.add_child(_confirm)
+	f.add_child(_note("The logs cannot show this, so the model takes your word. A log flown with other props, a lighter pack or without the camera makes a model that is a blend of both: leave such logs out. (Logs of one quad from different flight controllers are accepted on the same word.)"))
+
 
 
 func _row(f: VBoxContainer, key: String, label: String, note: String) -> HBoxContainer:
@@ -537,9 +737,11 @@ func _pick_drone(id: String, touched: bool) -> void:
 	o.select(0)
 
 
+
 # ---- files ----
 
-func _pick_files() -> void:
+func _pick_files(target: String) -> void:
+	_pick_for = target
 	if _dialog == null:
 		_dialog = FileDialog.new()
 		_dialog.name = "FileDialog"
@@ -549,7 +751,7 @@ func _pick_files() -> void:
 		_dialog.use_native_dialog = false
 		_dialog.title = "Pick blackbox logs"
 		_dialog.add_filter("*.bbl, *.bfl, *.txt, *.BBL, *.BFL, *.TXT", "Blackbox logs")
-		_dialog.files_selected.connect(add_files)
+		_dialog.files_selected.connect(func(p): add_files(p) if _pick_for == "new" else add_detail_logs(p))
 		add_child(_dialog)
 		_typing(_dialog)
 	var last := str(_cfg().get_value("logfit", "last_dir", ""))
@@ -565,18 +767,23 @@ func _cfg() -> ConfigFile:
 	return c
 
 
-## Adds logs to the list (a file already there is not added twice) and reads them
+func _remember_dir(picked: PackedStringArray) -> void:
+	if picked.is_empty():
+		return
+	var c := _cfg()
+	c.set_value("logfit", "last_dir", picked[0].get_base_dir())
+	DirAccess.make_dir_recursive_absolute(cfg_path.get_base_dir())
+	c.save(cfg_path)
+
+
+## Adds logs to the new model's list (a file already there is not added twice) and reads them
 func add_files(picked: PackedStringArray) -> void:
 	var added := false
 	for p in picked:
 		if p.get_extension().to_lower() in EXTS and not p in paths:
 			paths.append(p)
 			added = true
-	if not picked.is_empty():
-		var c := _cfg()
-		c.set_value("logfit", "last_dir", picked[0].get_base_dir())
-		DirAccess.make_dir_recursive_absolute(cfg_path.get_base_dir())
-		c.save(cfg_path)
+	_remember_dir(picked)
 	if added:
 		_inspect()
 	_refresh()
@@ -594,11 +801,13 @@ func remove_file(p: String) -> void:
 	_refresh()
 
 
-# ---- jobs (a Thread, polled each frame) ----
+# ---- reading the logs (a Thread, polled each frame) ----
 
 func _script() -> Script:
 	if logfit_script != null:
 		return logfit_script
+	if mm != null and mm.logfit_script != null:
+		return mm.logfit_script
 	if FileAccess.file_exists(LOGFIT) or ResourceLoader.exists(LOGFIT):
 		var s = load(LOGFIT)
 		if s is Script:
@@ -610,26 +819,9 @@ func available() -> bool:
 	return _script() != null
 
 
+## True while the logs are being read
 func busy() -> bool:
 	return _thread != null
-
-
-func _start(kind: String, fn: Callable) -> void:
-	_kind = kind
-	_after = [] if kind == "build" else _after
-	_done = false
-	_answer = null
-	_cancelled = false
-	_t0 = Time.get_ticks_msec()
-	_prog = {"step": "", "frac": 0.0}
-	_thread = Thread.new()
-	_thread.start(func():
-		var r = fn.call()
-		_mutex.lock()
-		_answer = r
-		_done = true
-		_mutex.unlock(), Thread.PRIORITY_LOW)
-	set_process(true)
 
 
 func _inspect() -> void:
@@ -642,13 +834,16 @@ func _inspect() -> void:
 	if _logfit == null:
 		_logfit = s.new()
 	var ps := paths.duplicate()
-	_start("inspect", func(): return _logfit.inspect(ps))
-
-
-func _on_progress(step: String, frac: float) -> void:
-	_mutex.lock()
-	_prog = {"step": step, "frac": frac}
-	_mutex.unlock()
+	_done = false
+	_answer = null
+	_thread = Thread.new()
+	_thread.start(func():
+		var r = _logfit.inspect(ps)
+		_mutex.lock()
+		_answer = r
+		_done = true
+		_mutex.unlock(), Thread.PRIORITY_LOW)
+	set_process(true)
 
 
 func _process(_d: float) -> void:
@@ -658,35 +853,47 @@ func _process(_d: float) -> void:
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	if hide_when_unpaused and visible and _was_paused and not _paused():
 		close()
-	if _thread == null:
-		if not visible:
+	if not visible:
+		if _thread == null:
 			set_process(false)
+		return
+	if mm != null:
+		if mm.busy():
+			mm.poll()
+		_job_update()
+		if mm.last != _seen_last or (stage == "overview" and mm.busy() != (_job_step != null)):
+			_seen_last = mm.last
+			_job_changed()
+	if _thread == null:
 		return
 	_mutex.lock()
 	var done := _done
-	var prog := _prog.duplicate()
 	var ans = _answer
 	_mutex.unlock()
-	if stage == "working":
-		_step.text = str(prog["step"]) if str(prog["step"]) != "" else "Starting..."
-		_bar.value = clampf(float(prog["frac"]), 0.0, 1.0) * 100.0
-		_elapsed.text = "%d s" % ((Time.get_ticks_msec() - _t0) / 1000)
 	if not done:
 		return
 	_thread.wait_to_finish()
 	_thread = null
-	set_process(false)
-	var kind := _kind
-	_kind = ""
-	if kind == "inspect":
-		info = ans if ans is Dictionary else {"errors": ["The log reader gave no answer."]}
-		if _again:
-			_again = false
-			_inspect()
-		_prefill()
-	else:
-		_built(ans if ans is Dictionary else {"ok": false, "errors": ["The build gave no answer."]})
+	info = ans if ans is Dictionary else {"errors": ["The log reader gave no answer."]}
+	if _again:
+		_again = false
+		_inspect()
+	_prefill()
 	_refresh()
+
+
+## A job started or finished
+func _job_changed() -> void:
+	if stage == "overview":
+		_refresh_overview()
+	elif stage == "detail":
+		if not detail_id.is_empty() and not mm.busy():
+			_reload_detail(false)
+		else:
+			_fill_job_banner()
+			_update_buttons()
+	elif stage == "new":
+		_validate()
 
 
 # ---- what inspect found ----
@@ -732,11 +939,12 @@ func banners() -> Array:
 
 
 ## The errors that stop a build (an override can lift the ones that say so)
+## The errors that stop a build (the confirmation lifts the ones that say so)
 func blocking() -> Array:
 	var out := []
 	for e in info.get("errors", []):
 		var m := message(e)
-		if m["overridable"] and _same != null and _same.button_pressed:
+		if m["overridable"] and _confirm != null and _confirm.button_pressed:
 			continue
 		out.append(m)
 	return out
@@ -779,7 +987,8 @@ func _prefill_num(key: String, v) -> void:
 	_mark(key, "from the log" + (", " + note if note != "" else ", check"))
 
 
-# ---- redraw ----
+
+# ---- redraw of the new-model page ----
 
 func _refresh() -> void:
 	if _files_box == null:
@@ -813,7 +1022,7 @@ func _refresh() -> void:
 		for s in sessions:
 			if s is Dictionary and str(s.get("file", "")).get_file() == p.get_file():
 				_files_box.add_child(_session_line(s))
-	if busy() and _kind == "inspect":
+	if busy():
 		_files_box.add_child(_note("Reading the logs..."))
 	elif not info.is_empty():
 		var ok := 0
@@ -825,8 +1034,6 @@ func _refresh() -> void:
 		var fw := str(info.get("firmware", ""))
 		_files_box.add_child(_label("%d session%s usable%s%s" % [ok, "" if ok == 1 else "s",
 			", %.1f min of flight" % (secs / 60.0) if secs > 0.0 else "", ", " + fw if fw != "" else ""], 0.95, GROUP))
-	for m in _after:
-		_msgs.add_child(_message_box(m, m["color"], m["prefix"]))
 	var blocked := blocking()
 	for m in blocked:
 		_msgs.add_child(_message_box(m, BAD, "Cannot build: "))
@@ -836,12 +1043,14 @@ func _refresh() -> void:
 		var m := message(w)
 		if _kind_of(m["text"]) == "" and not m["big"]:
 			_msgs.add_child(_message_box(m, DIM, ""))
-	if _same_row != null:
-		var any_over := false
-		for e in info.get("errors", []):
-			any_over = any_over or message(e)["overridable"]
-		_same_row.visible = paths.size() > 1 or any_over
-	_form_box.visible = not paths.is_empty() and not info.is_empty()
+	# an error the confirmation lifted is a note, not an error
+	for e in info.get("errors", []):
+		var m := message(e)
+		if m["overridable"] and _confirm != null and _confirm.button_pressed:
+			m["text"] += " (Used all the same: you confirmed that all logs are of one setup.)"
+			_msgs.add_child(_message_box(m, DIM, "Note: "))
+	if _mode == "new":
+		_form_box.visible = not paths.is_empty() and not info.is_empty()
 	_validate()
 
 
@@ -882,16 +1091,17 @@ func _message_box(m: Dictionary, color: Color, prefix: String) -> Control:
 	return v
 
 
+
 # ---- the form ----
 
-## Checks the boxes: {form, errors {key: text}}; shows the errors and sets Build
+## Checks the boxes: {form, errors {key: text}, id}; shows the errors and sets the buttons
 func _validate() -> Dictionary:
 	var errors := {}
 	var form := {}
 	if _ctl.is_empty():
 		return {"form": form, "errors": errors}
 	var nm := (_ctl["name"] as LineEdit).text.strip_edges()
-	var id := slug(nm)
+	var id := slug(nm) if _mode == "new" else detail_id
 	if nm == "":
 		errors["name"] = "required"
 	elif id == "":
@@ -921,38 +1131,66 @@ func _validate() -> Dictionary:
 	if duct > 0:
 		form["ducted"] = duct == 1
 	form["zone_vehicle_id"] = _drone_id()
-	if _same != null and _same.button_pressed:
+	if _confirm != null and _confirm.button_pressed:
 		form["same_quad"] = true
-	# the id must be free: a shipped model's is not, an own one asks first
-	var origin: String = host.model_origin(id) if id != "" and host != null and host.has_method("model_origin") else ""
-	if origin == "shipped":
-		errors["name"] = "\"%s\" is a model that comes with real_quad: pick another name (%s_2?)" % [id, id]
-	_overwrite.visible = origin == "user"
-	if origin == "user":
-		_overwrite.text = "A model \"%s\" of yours exists: replace it" % id
-		if not _overwrite.button_pressed:
-			errors["name"] = "a model of yours has this name: tick \"replace it\" below, or pick another name"
-		else:
-			form["overwrite"] = true
+	# a new model needs a free name
+	if _mode == "new" and id != "" and mm != null:
+		var origin: String = mm.origin(id)
+		if origin == "shipped":
+			errors["name"] = "\"%s\" is a model that comes with real_quad: pick another name (%s_2?)" % [id, id]
+		elif origin == "user":
+			errors["name"] = "a model of yours has this name: pick another, or open it in the list and rebuild"
 	for key in _errs:
 		var l: Label = _errs[key]
 		l.text = str(errors.get(key, ""))
 		l.visible = errors.has(key)
-	var why := ""
-	if not blocking().is_empty():
-		why = "Fix the problems above (or take other logs) to build."
-	elif paths.is_empty():
-		why = "Add the logs of your quad first."
-	elif info.is_empty():
-		why = "Reading the logs..."
-	elif not errors.is_empty():
-		why = "Fill in: " + ", ".join(PackedStringArray(errors.keys().map(func(k): return _label_of(k))))
-	elif not available():
-		why = "The model builder is not installed completely."
-	if _build != null:
-		_build.disabled = why != "" or busy()
+	var res := {"form": form, "errors": errors, "id": id}
+	_update_buttons(res)
+	return res
+
+
+## Why the form cannot be used now ("" = it can)
+func _form_problem(v: Dictionary) -> String:
+	if _confirm != null and not _confirm.button_pressed:
+		return "Tick the confirmation: the logs must all be of the quad as entered, or the model is a blend."
+	if not v["errors"].is_empty():
+		return "Fill in: " + ", ".join(PackedStringArray(v["errors"].keys().map(func(k): return _label_of(k))))
+	return ""
+
+
+func _busy_text() -> String:
+	if mm == null or not mm.busy():
+		return ""
+	var c: Dictionary = mm.current()
+	return "%s is being built (%s, %d %%): wait for it to finish, or cancel it in the model list." % [c.name, c.step, int(round(float(c.frac) * 100.0))]
+
+
+func _update_buttons(v := {}) -> void:
+	if _ctl.is_empty():
+		return
+	if v.is_empty():
+		v = _validate()
+		return
+	if _mode == "new" and _build != null:
+		var why := ""
+		if not blocking().is_empty():
+			why = "Fix the problems above (or take other logs) to build."
+		elif paths.is_empty():
+			why = "Add the logs of your quad first."
+		elif info.is_empty():
+			why = "Reading the logs..."
+		elif busy():
+			why = "Reading the logs..."
+		else:
+			why = _form_problem(v)
+		if why == "" and not available():
+			why = "The model builder is not installed completely."
+		if why == "":
+			why = _busy_text()
+		_build.disabled = why != ""
 		_hint.text = why
-	return {"form": form, "errors": errors, "id": id}
+	elif _mode == "edit" and _d_hint != null:
+		_update_detail_buttons(v)
 
 
 func _label_of(key: String) -> String:
@@ -964,196 +1202,490 @@ func _label_of(key: String) -> String:
 
 ## A name as a folder name: [a-z0-9_], at most 32 characters
 static func slug(s: String) -> String:
-	var out := ""
-	for ch in s.to_lower():
-		out += ch if (ch >= "a" and ch <= "z") or (ch >= "0" and ch <= "9") else "_"
-	while out.contains("__"):
-		out = out.replace("__", "_")
-	out = out.strip_edges().trim_prefix("_").trim_suffix("_")
-	return out.substr(0, 32).trim_suffix("_")
+	return _MM.slug(s)
 
 
-# ---- building ----
-
-func _build_working(page: VBoxContainer) -> void:
-	page.add_child(_heading("Building the model"))
-	_step = _label("", 1.12)
-	_step.name = "Step"
-	page.add_child(_step)
-	_bar = ProgressBar.new()
-	_bar.name = "Progress"
-	_bar.min_value = 0.0
-	_bar.max_value = 100.0
-	_bar.custom_minimum_size = Vector2(0, 22)
-	page.add_child(_bar)
-	_elapsed = _note("")
-	_elapsed.name = "Elapsed"
-	page.add_child(_elapsed)
-	page.add_child(_note("This takes a few minutes. The game goes on behind it, and may run slower on a weak computer."))
-	var c := Button.new()
-	c.name = "Cancel"
-	c.text = "  Cancel  "
-	c.pressed.connect(cancel)
-	var row := HBoxContainer.new()
-	row.add_child(c)
-	page.add_child(row)
-
-
-## Builds with what the form says; false when the form or the logs do not allow it
+## Starts the build of a new model with what the form says; false when the form or the logs do not allow it.
+## The manager runs it: the window goes to the overview, where the progress is.
 func start_build() -> bool:
 	var v := _validate()
-	if not v["errors"].is_empty() or not blocking().is_empty() or busy() or not available():
+	if not v["errors"].is_empty() or not blocking().is_empty() or busy() or not available() or mm == null:
 		return false
-	if _logfit == null:
-		_logfit = _script().new()
-	var id: String = v["id"]
-	var form: Dictionary = v["form"]
-	var out := out_root.path_join(id)
-	var ps := paths.duplicate()
-	var lf = _logfit
-	_start("build", func(): return lf.build(ps, form, out, _on_progress))
-	_step.text = "Starting..."
-	_bar.value = 0.0
-	_elapsed.text = ""
-	_show("working")
+	if _confirm != null and not _confirm.button_pressed:
+		return false
+	var err: String = mm.start({"id": v["id"], "form": v["form"], "add": Array(paths), "new": true})
+	if err != "":
+		_hint.text = err
+		return false
+	_reset_new()
+	_go("overview")
 	return true
 
 
-func cancel() -> void:
-	if busy() and _kind == "build":
-		_cancelled = true
-		_logfit.cancel()
-		_step.text = "Cancelling..."
+## The new-model page empty again
+func _reset_new() -> void:
+	paths = PackedStringArray()
+	info = {}
+	_touched = {}
+	_mode = "new"
+	for k in _ctl:
+		var c: Control = _ctl[k]
+		if c is LineEdit:
+			(c as LineEdit).text = ""
+		elif c is OptionButton and k != "zone_vehicle_id":
+			(c as OptionButton).select(3 if k == "class" else 0)
+		_mark(k, "")
+	_confirm.button_pressed = true
+	_class_changed(false)
+	_pick_drone(str(CLASSES[_class_key()]["drone"]), false)
 
 
-func _built(r: Dictionary) -> void:
-	result = r
-	_after = []
-	if _cancelled:
-		_after.append({"text": "Cancelled.", "fix": "", "color": DIM, "prefix": ""})
-		_show("setup")
+# ---- page 3: one model ----
+
+func _build_detail(page: VBoxContainer) -> void:
+	_d_head = HBoxContainer.new()
+	_d_head.name = "Head"
+	_d_head.add_theme_constant_override("separation", 14)
+	page.add_child(_d_head)
+	_d_job = VBoxContainer.new()
+	_d_job.name = "JobBanner"
+	page.add_child(_d_job)
+	_d_actions = VBoxContainer.new()
+	_d_actions.name = "Actions"
+	_d_actions.add_theme_constant_override("separation", 6)
+	page.add_child(_d_actions)
+	_tabs = TabContainer.new()
+	_tabs.name = "Tabs"
+	_tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	page.add_child(_tabs)
+	for t in ["Report", "Logs", "Parameters"]:
+		var holder := VBoxContainer.new()
+		holder.name = t
+		_tabs.add_child(holder)
+		var v := _scroll(holder)
+		match t:
+			"Report": _d_report = v
+			"Logs": _d_logs = v
+			"Parameters": _d_params = v
+	_d_foot = HBoxContainer.new()
+	_d_foot.name = "Foot"
+	_d_foot.add_theme_constant_override("separation", 12)
+	page.add_child(_d_foot)
+	_d_hint = _label("", 0.9)
+	_d_hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_d_foot.add_child(_d_hint)
+	_d_foot.add_child(_btn("SaveMeta", "  Save name and drone  ", save_meta, "Writes the name and the Zone drone into the model; no rebuild"))
+	_d_foot.add_child(_btn("Rebuild", "  Rebuild the model  ", rebuild, "Builds the model again from its logs and these parameters; the old one flies until the new one is ready"))
+
+
+## Opens one model's page
+func show_detail(id: String) -> void:
+	if mm == null:
 		return
-	if not bool(r.get("ok", false)):
-		for e in r.get("errors", []):
-			var m := message(e)
-			m["color"] = BAD
-			m["prefix"] = "The build failed: "
-			_after.append(m)
-		if _after.is_empty():
-			_after.append({"text": "The build failed.", "fix": "", "color": BAD, "prefix": ""})
-		_show("setup")
+	var d: Dictionary = mm.details(id)
+	if d.is_empty():
+		_go("overview")
 		return
-	_show_result()
+	detail_id = id
+	_reload_detail(true)
+	_go("detail")
 
 
-# ---- the result ----
+func _reload_detail(first: bool) -> void:
+	var d: Dictionary = mm.details(detail_id)
+	if d.is_empty():
+		detail_id = ""
+		detail = {}
+		_go("overview")
+		return
+	detail = d
+	pend_add = PackedStringArray()
+	pend_rm = {}
+	_confirming_delete = false
+	_move_form(_new_holder)
+	_title.text = str(d.name)
+	var editable: bool = d.origin == "user"
+	_fill_head()
+	_fill_job_banner()
+	_fill_actions()
+	_fill_report()
+	_fill_logs()
+	_tabs.set_tab_hidden(1, not editable)
+	_tabs.set_tab_hidden(2, not editable)
+	if editable:
+		_move_form(_d_params)
+		_form_box.visible = true
+		set_form(d.form)
+		_baseline = _validate()["form"]
+	else:
+		_mode = "new"
+	_tabs.current_tab = 0
+	_d_foot.visible = editable
+	if editable:
+		_update_buttons(_validate())
 
-func _build_result(page: VBoxContainer) -> void:
-	var v := _scroll(page)
-	_res_box = v
-	var foot := HBoxContainer.new()
-	foot.add_theme_constant_override("separation", 10)
-	page.add_child(foot)
+
+func _fill_head() -> void:
+	_clear(_d_head)
+	var d := detail
+	var grade := str(d.grade)
+	_d_head.add_child(_btn("Back", " < Models ", func(): _go("overview")))
+	var g := Label.new()
+	g.name = "Grade"
+	g.text = grade if grade != "" else "-"
+	g.add_theme_font_size_override("font_size", int(get_theme_default_font_size() * 3.2))
+	g.add_theme_color_override("font_color", _grade_color(grade))
+	_d_head.add_child(g)
+	var side := VBoxContainer.new()
+	side.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	side.add_child(_label("%s - %s" % [d.name, MEANING.get(grade, "")] if MEANING.has(grade) else str(d.name), 1.3))
+	var flies := ", ".join(PackedStringArray((d.drones as Array).map(func(x): return str(x.name))))
+	var bits := PackedStringArray(["comes with real_quad (read-only)" if d.origin == "shipped" else "yours",
+		"flies on: " + flies if flies != "" else "not flown on any drone",
+		"uses %s" % _MM.human_bytes(int(d.bytes)) + (" (logs %s)" % _MM.human_bytes(int(d.logs_bytes)) if int(d.logs_bytes) > 0 else "")])
+	var sub := _note(" · ".join(bits) + "\n" + ProjectSettings.globalize_path(str(d.dir)))
+	sub.name = "Sub"
+	side.add_child(sub)
+	_d_head.add_child(side)
+
+
+## The progress of the running build, when it is this model's
+func _fill_job_banner() -> void:
+	_clear(_d_job)
+	_d_step = null
+	_d_bar = null
+	if mm == null or not mm.busy():
+		return
+	var c: Dictionary = mm.current()
+	var card := _card()
+	var v := VBoxContainer.new()
+	card.add_child(v)
+	var h := HBoxContainer.new()
+	h.add_theme_constant_override("separation", 12)
+	v.add_child(h)
+	_d_step = _label("", 0.95, GROUP)
+	_d_step.name = "JobStep"
+	_d_step.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	h.add_child(_d_step)
+	h.add_child(_btn("Cancel", "  Cancel  ", func(): mm.cancel()))
+	_d_bar = ProgressBar.new()
+	_d_bar.name = "JobBar"
+	_d_bar.min_value = 0.0
+	_d_bar.max_value = 100.0
+	_d_bar.custom_minimum_size = Vector2(0, 18)
+	v.add_child(_d_bar)
+	_d_job.add_child(card)
+	_job_update()
+
+
+func _fill_actions() -> void:
+	_clear(_d_actions)
+	var d := detail
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 10)
 	var l := Label.new()
 	l.text = "Fly it on"
-	foot.add_child(l)
+	row.add_child(l)
 	_use_pick = OptionButton.new()
 	_use_pick.name = "Drone"
 	_use_pick.custom_minimum_size = Vector2(220, 0)
 	_use_pick.fit_to_longest_item = false
+	_use_pick.add_item("(pick a drone)")
+	_use_pick.set_item_metadata(0, "")
+	for x in _drones:
+		_use_pick.add_item(str(x["name"]))
+		_use_pick.set_item_metadata(_use_pick.item_count - 1, str(x["id"]))
+	var want := str(d.zone_vehicle_id)
+	if (d.drones as Array).is_empty():
+		for i in _use_pick.item_count:
+			if str(_use_pick.get_item_metadata(i)) == want:
+				_use_pick.select(i)
+	else:
+		for i in _use_pick.item_count:
+			if str(_use_pick.get_item_metadata(i)) == str(d.drones[0].id):
+				_use_pick.select(i)
 	_use_pick.item_selected.connect(func(_i): _use_label())
-	foot.add_child(_use_pick)
-	_use = Button.new()
-	_use.name = "UseFor"
-	_use.pressed.connect(use_for_drone)
-	foot.add_child(_use)
+	row.add_child(_use_pick)
+	var use := _btn("UseFor", "", use_for_drone)
+	row.add_child(use)
 	_use_note = _label("", 0.9)
 	_use_note.name = "UseNote"
 	_use_note.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	foot.add_child(_use_note)
-	var folder := Button.new()
-	folder.name = "OpenFolder"
-	folder.text = " Open folder "
-	folder.pressed.connect(func(): OS.shell_open(ProjectSettings.globalize_path(str(result.get("package_dir", out_root)))))
-	foot.add_child(folder)
-	var back := Button.new()
-	back.name = "Another"
-	back.text = " Another model "
-	back.tooltip_text = "Back to the logs and the form"
-	back.pressed.connect(func():
-		_show("setup")
-		_refresh())
-	foot.add_child(back)
-	var c := Button.new()
-	c.name = "CloseResult"
-	c.text = "  Close  "
-	c.pressed.connect(close)
-	foot.add_child(c)
-
-
-func _show_result() -> void:
-	_clear(_res_box)
-	var grade := str(result.get("grade", "?"))
-	var head := HBoxContainer.new()
-	head.add_theme_constant_override("separation", 16)
-	var g := Label.new()
-	g.name = "Grade"
-	g.text = grade
-	g.add_theme_font_size_override("font_size", int(get_theme_default_font_size() * 3.2))
-	g.add_theme_color_override("font_color", GOOD if grade in ["A", "B"] else (WARN if grade in ["C", "D"] else BAD))
-	head.add_child(g)
-	var side := VBoxContainer.new()
-	side.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	side.add_child(_label("%s - %s" % [str(result.get("model_id", "")), MEANING.get(grade, "")], 1.3))
-	side.add_child(_note("Kept in " + ProjectSettings.globalize_path(str(result.get("package_dir", out_root)))))
-	head.add_child(side)
-	_res_box.add_child(head)
-	var seen := {}
-	for w in result.get("warnings", []):
-		var m := message(w)
-		var big: bool = m["big"] or _kind_of(m["text"]) != ""
-		seen[m["text"]] = true
-		_res_box.add_child(_message_box(m, WARN if big else DIM, "WARNING: " if big else ""))
-	_res_box.add_child(HSeparator.new())
-	_report = RichTextLabel.new()
-	_report.name = "Report"
-	_report.bbcode_enabled = true
-	_report.fit_content = true
-	_report.scroll_active = false
-	_report.selection_enabled = true
-	_report.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_report.text = md_to_bbcode(str(result.get("report_md", "")), get_theme_default_font_size())
-	_res_box.add_child(_report)
-	_use_pick.clear()
-	_use_pick.add_item("(none)")
-	_use_pick.set_item_metadata(0, "")
-	for d in _drones:
-		_use_pick.add_item(str(d["name"]))
-		_use_pick.set_item_metadata(_use_pick.item_count - 1, str(d["id"]))
-	var want := _drone_id()
-	for i in _use_pick.item_count:
-		if str(_use_pick.get_item_metadata(i)) == want:
-			_use_pick.select(i)
-	_use_note.text = ""
+	row.add_child(_use_note)
+	_d_actions.add_child(row)
+	var row2 := HBoxContainer.new()
+	row2.add_theme_constant_override("separation", 10)
+	if d.origin == "shipped":
+		row2.add_child(_btn("Duplicate", " Duplicate and edit ", duplicate_model, "Makes a copy of yours that you can change"))
+	else:
+		row2.add_child(_btn("Duplicate", " Duplicate ", duplicate_model, "Makes a copy of this model, with its logs"))
+		row2.add_child(_btn("Delete", " Delete ", func():
+			_confirming_delete = true
+			_fill_actions(), "Deletes the model and its logs"))
+	row2.add_child(_btn("OpenFolder", " Open folder ", open_folder))
+	_d_actions.add_child(row2)
+	if _confirming_delete:
+		var cr := HBoxContainer.new()
+		cr.name = "DeleteConfirm"
+		cr.add_theme_constant_override("separation", 10)
+		cr.add_child(_label("Delete %s, its logs and its report for good? The drones set to it fly their default again." % d.name, 1.0, BAD))
+		cr.add_child(_btn("DeleteYes", " Yes, delete ", delete_model))
+		cr.add_child(_btn("DeleteNo", " Keep it ", func():
+			_confirming_delete = false
+			_fill_actions()))
+		_d_actions.add_child(cr)
 	_use_label()
-	_show("result")
 
 
 func _use_label() -> void:
+	var use := _d_actions.find_child("UseFor", true, false) as Button
+	if use == null or _use_pick == null:
+		return
 	var id := str(_use_pick.get_item_metadata(_use_pick.selected)) if _use_pick.selected >= 0 else ""
-	_use.disabled = id == ""
-	_use.text = " Use for %s " % _use_pick.get_item_text(_use_pick.selected) if id != "" else " Use for a drone "
+	use.disabled = id == ""
+	use.text = " Use for %s " % _use_pick.get_item_text(_use_pick.selected) if id != "" else " Use for a drone "
 
 
 ## Writes model=<id> into the picked drone's settings and has real_quad take it
 func use_for_drone() -> void:
 	var vid := str(_use_pick.get_item_metadata(_use_pick.selected))
-	var mid := str(result.get("model_id", ""))
-	if vid == "" or mid == "" or host == null:
+	if vid == "" or detail_id == "" or host == null:
 		return
-	var err: String = host.set_drone_model(vid, mid)
-	_use_note.text = err if err != "" else "Set: %s flies the %s model now." % [_use_pick.get_item_text(_use_pick.selected), mid]
+	var err: String = host.set_drone_model(vid, detail_id)
+	_use_note.text = err if err != "" else "Set: %s flies the %s model now." % [_use_pick.get_item_text(_use_pick.selected), detail_id]
 	_use_note.add_theme_color_override("font_color", BAD if err != "" else GOOD)
+	if err == "":
+		detail = mm.details(detail_id)
+		_fill_head()
+
+
+func duplicate_model() -> void:
+	var r: Dictionary = mm.duplicate(detail_id)
+	if not bool(r.ok):
+		_use_note.text = str(r.error)
+		_use_note.add_theme_color_override("font_color", BAD)
+		return
+	show_detail(str(r.id))
+
+
+func delete_model() -> void:
+	var err: String = mm.delete(detail_id)
+	if err != "":
+		_confirming_delete = false
+		_fill_actions()
+		_use_note.text = err
+		_use_note.add_theme_color_override("font_color", BAD)
+		return
+	detail_id = ""
+	detail = {}
+	_go("overview")
+
+
+func open_folder() -> void:
+	OS.shell_open(ProjectSettings.globalize_path(str(detail.dir)))
+
+
+func _fill_report() -> void:
+	_clear(_d_report)
+	var rep := RichTextLabel.new()
+	rep.name = "ReportText"
+	rep.bbcode_enabled = true
+	rep.fit_content = true
+	rep.scroll_active = false
+	rep.selection_enabled = true
+	rep.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var md := str(detail.report_md)
+	rep.text = md_to_bbcode(md, get_theme_default_font_size()) if md != "" else "This model has no report."
+	_d_report.add_child(rep)
+
+
+# ---- the logs of a model ----
+
+func _fill_logs() -> void:
+	_clear(_d_logs)
+	var d := detail
+	if d.origin != "user":
+		return
+	var stored: Array = (d.logs as Array).filter(func(l): return bool(l.stored))
+	_d_logs.add_child(_note("The logs are kept in the model's folder (logs/), so it can be rebuilt without the originals. Add or remove logs, then rebuild. Identical files are kept once."))
+	if not bool(d.inputs_known) or (stored.is_empty() and not (d.logs as Array).is_empty()):
+		var names := ", ".join(PackedStringArray((d.logs as Array).map(func(l): return str(l.name))))
+		_d_logs.add_child(_label("%s. This model was built before the logs were kept with it%s." % [INPUTS_UNKNOWN, " (from %d files: %s)" % [d.logs.size(), names] if not (d.logs as Array).is_empty() else ""], 1.0, WARN))
+	elif stored.is_empty():
+		_d_logs.add_child(_label(INPUTS_UNKNOWN + ".", 1.0, WARN))
+	for l in stored:
+		var row := HBoxContainer.new()
+		row.name = "Log_" + str(l.name).validate_node_name()
+		row.add_theme_constant_override("separation", 10)
+		var removed := pend_rm.has(str(l.name))
+		var n := _label("%s  (%s)%s" % [l.name, _MM.human_bytes(int(l.size)), "  - will be removed" if removed else ""], 1.0, DIM if removed else Color.WHITE)
+		n.autowrap_mode = TextServer.AUTOWRAP_OFF
+		n.clip_text = true
+		n.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(n)
+		row.add_child(_btn("Undo" if removed else "Remove", " Undo " if removed else " Remove ", toggle_log.bind(str(l.name))))
+		_d_logs.add_child(row)
+	for p in pend_add:
+		var row := HBoxContainer.new()
+		row.name = "Add_" + p.get_file().validate_node_name()
+		row.add_theme_constant_override("separation", 10)
+		var n := _label("%s  - will be added" % p.get_file(), 1.0, GOOD)
+		n.autowrap_mode = TextServer.AUTOWRAP_OFF
+		n.clip_text = true
+		n.tooltip_text = p
+		n.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(n)
+		row.add_child(_btn("Remove", " Remove ", drop_added.bind(p)))
+		_d_logs.add_child(row)
+	var foot := HBoxContainer.new()
+	foot.add_theme_constant_override("separation", 10)
+	foot.add_child(_btn("AddLogs", " Add log files... ", func(): _pick_files("detail"), "Pick .bbl, .bfl or .txt blackbox logs of this quad (several at once)"))
+	var disk := _note("Disk use: logs %s of %s in all." % [_MM.human_bytes(int(d.logs_bytes)), _MM.human_bytes(int(d.bytes))])
+	disk.name = "Disk"
+	disk.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	disk.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	foot.add_child(disk)
+	_d_logs.add_child(foot)
+
+
+func toggle_log(log_name: String) -> void:
+	if pend_rm.has(log_name):
+		pend_rm.erase(log_name)
+	else:
+		pend_rm[log_name] = true
+	_fill_logs()
+	_update_buttons(_validate())
+
+
+func drop_added(p: String) -> void:
+	var i := pend_add.find(p)
+	if i >= 0:
+		pend_add.remove_at(i)
+	_fill_logs()
+	_update_buttons(_validate())
+
+
+## Logs to add to the model in the detail page
+func add_detail_logs(picked: PackedStringArray) -> void:
+	for p in picked:
+		if p.get_extension().to_lower() in EXTS and not p in pend_add:
+			pend_add.append(p)
+	_remember_dir(picked)
+	_fill_logs()
+	_update_buttons(_validate())
+
+
+# ---- the parameters of a model ----
+
+func _num_text(x) -> String:
+	var f := float(x)
+	return str(int(f)) if f == floorf(f) else String.num(f, 3)
+
+
+## Fills the form from a stored form (the detail page)
+func set_form(f: Dictionary) -> void:
+	_mode = "edit"
+	(_ctl["name"] as LineEdit).text = str(f.get("name", ""))
+	for spec in FIELDS:
+		var k: String = spec["key"]
+		(_ctl[k] as LineEdit).text = _num_text(f[k]) if f.get(k) != null else ""
+	var pi := PACKS.keys().find(str(f.get("pack_type", "lipo")))
+	(_ctl["pack_type"] as OptionButton).select(maxi(pi, 0))
+	(_ctl["class"] as OptionButton).select(maxi(CLASS_ORDER.find(str(f.get("class", "five"))), 0))
+	(_ctl["ducted"] as OptionButton).select(0 if f.get("ducted") == null else (1 if bool(f.ducted) else 2))
+	for k in _ctl:
+		_touched[k] = true
+		_mark(k, "")
+	_confirm.button_pressed = true
+	_class_changed(false)
+	_pick_drone(str(f.get("zone_vehicle_id", "")), true)
+
+
+func _move_form(to: Control) -> void:
+	if _form_box == null or to == null or _form_box.get_parent() == to:
+		return
+	if _form_box.get_parent() != null:
+		_form_box.get_parent().remove_child(_form_box)
+	to.add_child(_form_box)
+
+
+static func _differs(a: Variant, b: Variant) -> bool:
+	if a == null or b == null:
+		return a != b
+	if (a is int or a is float) and (b is int or b is float):
+		return absf(float(a) - float(b)) > 1e-9 * maxf(1.0, absf(float(a)))
+	return str(a) != str(b)
+
+
+## What the detail page would do now: {meta: only name / drone changed, rebuild: more changed or logs changed, why, remaining logs}
+func edit_state(v: Dictionary) -> Dictionary:
+	var meta := false
+	var rebuild := not pend_add.is_empty() or not pend_rm.is_empty()
+	var keys := {}
+	for k in v["form"]:
+		keys[k] = true
+	for k in _baseline:
+		keys[k] = true
+	for k in keys:
+		if k == "same_quad":
+			continue
+		if _differs(v["form"].get(k), _baseline.get(k)):
+			if k in ["name", "zone_vehicle_id"]:
+				meta = true
+			else:
+				rebuild = true
+	var kept := 0
+	for l in detail.get("logs", []):
+		if bool(l.stored) and not pend_rm.has(str(l.name)):
+			kept += 1
+	return {"meta": meta, "rebuild": rebuild, "logs": kept + pend_add.size()}
+
+
+func _update_detail_buttons(v: Dictionary) -> void:
+	var st := edit_state(v)
+	var save := _d_foot.find_child("SaveMeta", true, false) as Button
+	var reb := _d_foot.find_child("Rebuild", true, false) as Button
+	var why := _form_problem(v)
+	var busy_t := _busy_text()
+	save.visible = bool(st.meta) and not bool(st.rebuild)
+	save.disabled = why != "" or busy_t != ""
+	var reb_why := why
+	if reb_why == "" and int(st.logs) == 0:
+		reb_why = INPUTS_UNKNOWN + " (Logs tab)."
+	if reb_why == "" and busy_t != "":
+		reb_why = busy_t
+	reb.disabled = reb_why != ""
+	_d_hint.text = reb_why if reb_why != "" else ("Changes: the parameters or logs changed - rebuild to use them." if bool(st.rebuild) else
+		("The name or the drone changed: save it, no rebuild needed." if bool(st.meta) else "Rebuild runs the fit again on the stored logs."))
+
+
+## Builds the model again from its logs and the parameters in the form
+func rebuild() -> bool:
+	var v := _validate()
+	if mm == null or _form_problem(v) != "" or detail_id == "":
+		return false
+	var keep: Array = []
+	for l in detail.logs:
+		if bool(l.stored) and not pend_rm.has(str(l.name)):
+			keep.append(str(l.name))
+	var err: String = mm.start({"id": detail_id, "form": v["form"], "add": Array(pend_add), "keep": keep, "new": false})
+	if err != "":
+		_d_hint.text = err
+		return false
+	_go("overview")
+	return true
+
+
+func save_meta() -> bool:
+	var v := _validate()
+	if mm == null or _form_problem(v) != "":
+		return false
+	var err: String = mm.apply_meta(detail_id, str(v["form"]["name"]), str(v["form"].get("zone_vehicle_id", "")))
+	if err != "":
+		_d_hint.text = err
+		return false
+	_reload_detail(false)
+	return true
 
 
 # ---- the report: minimal Markdown to BBCode ----
@@ -1242,3 +1774,4 @@ static func _table(rows: Array) -> String:
 			out.append("[cell padding=0,1,14,1]%s[/cell]" % ("[b]%s[/b]" % t if n < head and t != "" else t))
 	out.append("[/table]")
 	return "".join(out)
+

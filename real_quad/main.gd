@@ -32,14 +32,15 @@ const KNOWN_MD5 := ["b27ff67e1823e52bc519732313f06083"]
 const NEED_METHODS := ["_physics_process", "play_sound", "is_armed", "calc_motor_rpm", "_handle_rotation", "get_thrust_at_rpm"]
 const NEED_PROPERTIES := ["stick_pos", "turtle_mode_active", "current_motor_rpm", "_SETTINGS"]
 const ModelRegistry := preload("flightmodel/model_registry.gd")
-const BuilderWindow := preload("logfit/window.gd")
+const ManagerWindow := preload("logfit/window.gd")
+const ModelManager := preload("logfit/model_manager.gd")
 const USER_MODELS := "user://real_quad/models"   # the models you made; with the same id as a shipped one, yours flies
+var user_root := USER_MODELS         # (the tests use another folder)
 
 const DEFAULTS := {
 	"ground_ceiling_effect": true,
 	"battery_capacity_mah": 1300.0,     # for a model package that does not say
 	"unknown_game_version": false,
-	"model_builder": false,
 }
 # What each drone's section sets (see settings.default.cfg)
 const DRONE_DEFAULTS := {"model": "auto", "propwash": 1.0, "drag": 0.0, "rates": "game"}
@@ -57,15 +58,20 @@ var _why_not := ""
 var _log := PackedStringArray()
 var _said := {}
 var model_roots := PackedStringArray()   # folders of model packages (a package each: craft.json, fc.json, plant.json)
-var _builder: Control = null          # the "Build a model from logs" window
+var manager: ModelManager = null      # the model manager: builds are its jobs, they go on with the window closed
+var _builder: Control = null          # the model manager window (logfit/window.gd)
+var _toast: Label = null
+var _toast_until := 0
 
 
 func zm_init(core: Node, _dir: String) -> void:
 	_core = core
 	_say("real_quad %s" % VERSION)
 	# listed from the real folder: the game's own file list does not know a folder next to its exe
-	model_roots = PackedStringArray([_game_dir().path_join("models"), USER_MODELS])
+	model_roots = PackedStringArray([_game_dir().path_join("models"), user_root])
 	_scan_models()
+	_make_manager()
+	process_mode = Node.PROCESS_MODE_ALWAYS
 	read_settings()
 	_say("ground and ceiling effect %s, %d mAh for a model whose package gives no pack size" % [
 		"on" if bool(cfg["ground_ceiling_effect"]) else "off", int(cfg["battery_capacity_mah"])])
@@ -132,6 +138,12 @@ func zm_restart_keys() -> PackedStringArray:
 ## drone flown right now (so "auto" shows what it picked), or why the settings
 ## do nothing for now. mod_settings reads it again after each change
 func zm_settings_status() -> String:
+	var job := manager.status() if manager != null else ""
+	var base := _flying_status()
+	return job + ("\n" if job != "" and base != "" else "") + base
+
+
+func _flying_status() -> String:
 	if not on:
 		return "not in effect: " + (_why_not if _why_not != "" else "the game has not started it yet")
 	var gs := get_node_or_null("/root/ZGamestate")
@@ -157,12 +169,17 @@ func zm_settings_choices(section: String, key: String) -> PackedStringArray:
 ## Buttons on the mod's page in mod_settings
 func zm_settings_actions() -> Array:
 	var out := []
-	if bool(cfg["model_builder"]):
-		out.append({"label": "Build a model from logs...", "method": "open_model_builder",
-			"tip": "Makes a flight model of your own quad from its Betaflight blackbox logs"})
+	out.append({"label": "Models…", "method": "open_model_manager",
+		"tip": "All flight models: build one from your Betaflight blackbox logs, see how good each is, change, copy or delete your own, set which drone flies which"})
 	out.append({"label": "Rescan models", "method": "rescan_models",
 		"tip": "Looks again in real_quad/models and in your own models folder"})
 	return out
+
+
+## The model manager: it owns the builds, so they go on when its window is closed
+func _make_manager() -> void:
+	manager = ModelManager.new(self, user_root)
+	manager.finished.connect(_job_finished)
 
 
 ## Looks for the model packages again (after one was added or removed by hand)
@@ -180,22 +197,21 @@ func rescan_models() -> void:
 ## Where the models you made are kept (user://real_quad/models), made when asked
 func user_models_dir(create := false) -> String:
 	if create:
-		DirAccess.make_dir_recursive_absolute(USER_MODELS)
-	return ProjectSettings.globalize_path(USER_MODELS)
+		DirAccess.make_dir_recursive_absolute(user_root)
+	return ProjectSettings.globalize_path(user_root)
 
 
-## Opens the window that builds a model from blackbox logs (logfit/window.gd), over the pause menu
-func open_model_builder() -> void:
+## Opens the model manager (logfit/window.gd), over the pause menu
+func open_model_manager() -> void:
 	if _builder == null or not is_instance_valid(_builder):
 		var layer := CanvasLayer.new()
-		layer.name = "ModelBuilder"
+		layer.name = "ModelManager"
 		layer.layer = 95
 		layer.process_mode = Node.PROCESS_MODE_ALWAYS
 		add_child(layer)
-		_builder = BuilderWindow.new()
+		_builder = ManagerWindow.new()
 		_builder.name = "Window"
 		_builder.host = self
-		_builder.out_root = USER_MODELS
 		_builder.hide_when_unpaused = true
 		layer.add_child(_builder)
 	_builder.get_parent().visible = true
@@ -204,9 +220,55 @@ func open_model_builder() -> void:
 		_builder.closed.connect(_builder_closed)
 
 
+## What the earlier versions called it
+func open_model_builder() -> void:
+	open_model_manager()
+
+
 func _builder_closed() -> void:
 	if _builder != null and is_instance_valid(_builder):
 		_builder.get_parent().visible = false
+
+
+## A package was added, rewritten or removed (a job, copy, delete): find the models again; a rebuilt
+## one is loaded again at once (id), the hook takes the new figures on its next tick
+func models_changed(id := "") -> void:
+	if id != "" and registry != null:
+		registry._cache.erase(id)       # the registry keeps a loaded model until its folder moves
+		registry._failed.erase(id)
+	rescan_models()
+
+
+func _job_finished(rec: Dictionary) -> void:
+	_say(ModelManager.notice_text(rec))
+	_show_toast(ModelManager.notice_text(rec))
+
+
+func _process(_d: float) -> void:
+	if manager != null and manager.busy():
+		manager.poll()
+	if _toast != null and Time.get_ticks_msec() > _toast_until:
+		_toast.get_parent().visible = false
+
+
+## A short message in the corner of the screen (a job finished)
+func _show_toast(text: String) -> void:
+	if _toast == null or not is_instance_valid(_toast):
+		var layer := CanvasLayer.new()
+		layer.name = "ModelToast"
+		layer.layer = 96
+		layer.process_mode = Node.PROCESS_MODE_ALWAYS
+		add_child(layer)
+		_toast = Label.new()
+		_toast.name = "Toast"
+		_toast.position = Vector2(16, 16)
+		_toast.add_theme_color_override("font_color", Color(0.55, 0.9, 0.55))
+		_toast.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
+		_toast.add_theme_constant_override("outline_size", 6)
+		layer.add_child(_toast)
+	_toast.text = text
+	_toast.get_parent().visible = true
+	_toast_until = Time.get_ticks_msec() + 8000
 
 
 ## The game's drones for the builder's lists: [{id, name}], then the ones settings.cfg has a section for
@@ -240,7 +302,7 @@ func flown_vehicle() -> String:
 func model_origin(id: String) -> String:
 	if DirAccess.dir_exists_absolute(_game_dir().path_join("models").path_join(id)) or DirAccess.dir_exists_absolute("res://real_quad/models/" + id):
 		return "shipped"
-	if registry.has_model(id) or DirAccess.dir_exists_absolute(USER_MODELS.path_join(id)):
+	if registry.has_model(id) or DirAccess.dir_exists_absolute(user_root.path_join(id)):
 		return "user"
 	return ""
 
