@@ -10,7 +10,9 @@ extends RefCounted
 ##   6 bias                     torque imbalance per thrust
 ##   7 battery                  V0 and sag
 ##   8 drag                     rotor and body drag (ACC), else top speed, else class default
-##   9 propwash                 log metric only (dirty_air values: class, not fitted in v1)
+##   9 propwash                 log metric (the calibration's targets)
+##  9b prop wash calibration    dirty_air's gust and the calm-air turbulence, flown in dirty_air's air
+##                              (calibrate.gd; after the validation, which does not depend on them)
 ##  10 validate, coverage, grade, report, package (craft.json format 2, fc.json, plant.json,
 ##     report.md, logfit.json)
 ## run() never touches the scene tree (it runs in a worker Thread); a refusal writes nothing.
@@ -30,6 +32,7 @@ const Bias := preload("bias.gd")
 const Battery := preload("battery.gd")
 const Drag := preload("drag.gd")
 const Propwash := preload("propwash.gd")
+const Calibrate := preload("calibrate.gd")
 const Validate := preload("validate.gd")
 const Grade := preload("grade.gd")
 const Report := preload("report.gd")
@@ -43,6 +46,7 @@ const PLANT_KEYS := ["mass", "kv_rad", "motor_a", "motor_b", "motor_c", "motor_d
 	"wake_min_age", "wake_r0", "wake_growth", "wake_slip_factor", "wake_decel", "wake_cap", "wake_gain",
 	"turb_base_ms", "pw_turb_ms", "pw_noise_hz", "vrs_center", "vrs_width", "vrs_loss", "seed", "_comment",
 	"dirty_air_wash", "dirty_air_wake", "dirty_air_gust"]
+# (plant.json also gets "dirty_air_calibration", calibrate.gd's record, after them)
 const MIN_CHIRP_S := 30.0
 const MIN_AIRBORNE_S := 60.0
 const SOFT_AIRBORNE_S := 180.0
@@ -52,6 +56,7 @@ var progress := Callable()           # progress.call(step_name: String, fraction
 var cancel_flag := false
 var steps := {}                      # every step's results (for the parity tests and logfit.json)
 var _decoders: Array = []
+var _cal: Calibrate = null
 var _mutex := Mutex.new()
 
 
@@ -60,6 +65,8 @@ func cancel() -> void:
 	_mutex.lock()
 	for d in _decoders:
 		d.cancel()
+	if _cal != null:
+		_cal.cancel()
 	_mutex.unlock()
 
 
@@ -607,6 +614,25 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 	rep.validation(hvv, t90, ev)
 	steps["10_validate"] = {"hover": hvv, "events": ev, "t90": t90}
 
+	# 9b prop wash calibration
+	_say("Prop wash calibration", 0.88)
+	var cal := Calibrate.new()
+	_mutex.lock()
+	_cal = cal
+	_mutex.unlock()
+	if cancel_flag:
+		cal.cancel()
+	cal.progress = func(fr: float) -> void: _say("Prop wash calibration", 0.88 + 0.08 * fr)
+	var pwc := cal.run(Craft.package_craft(c), cfg, p, pw)
+	_mutex.lock()
+	_cal = null
+	_mutex.unlock()
+	if cancel_flag:
+		return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
+	Calibrate.apply(p, pwc)
+	rep.propwash_calibration(pwc)
+	steps["09b_calibration"] = pwc
+
 	# plausibility vs the class band
 	_say("Grade and report", 0.97)
 	var s: float = geo.scale
@@ -652,12 +678,14 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 	var rate_ok := LL.all(func(x): return 900.0 <= x.fs_raw and x.fs_raw < 1500.0)
 	var fn := Grade.fly_next(cov, cls, src.pid_hz() / 1000.0, rate_ok)
 	var fly: Array = fn[0]
+	fly.append_array(Grade.propwash_fly(pw))
 	if body_src == "default":
 		fly.append("Enter the quad's top speed in the model's parameters (%s): the body drag is a class default" % Grade.TOP_SPEED_WHERE)
 	rep.grade = letter
 	rep.grade_caps = caps
 	rep.fly = fly
-	rep.cover = [Grade.chirp_text(cov), Grade.drag_text(rd_ok, body_src, Report.fmt_g(float(c.top_speed_kmh), 12) if c.get("top_speed_kmh") else "")]
+	rep.cover = [Grade.chirp_text(cov), Grade.drag_text(rd_ok, body_src, Report.fmt_g(float(c.top_speed_kmh), 12) if c.get("top_speed_kmh") else ""),
+		Calibrate.summary(pwc)]
 	rep.cli = Classes.chirp_cli(cls, src.pid_hz() / 1000.0) if fn[1] else null
 	if not acc_ok:
 		rep.banners.append("No accelerometer data: hover from the steady rule (about 20 % uncertainty in kT), no drag measurement. Turn on ACC logging: set blackbox_disable_acc = OFF")
@@ -704,6 +732,8 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 		"grade_reasons": caps.map(func(x): return {"cap": x[0], "reason": x[1]}), "warnings": warns, "banners": rep.banners,
 		"fly_next": fly, "cli": rep.cli, "propwash": pw, "param_sources": _param_sources(rd_ok, body_src, yaw_ok, use_chirp, b, bat, geo, sources),
 		"runtime_s": Num.pyround(rep.runtime, 1)}
+	for k in pwc.calibrated:
+		lf.param_sources[{"calm": "turb_base_ms", "dropcatch": "dirty_air_gust"}[k]] = "M"
 	var md := rep.render()
 	steps["12_final"] = {"plant": p, "fc": cfg, "craft": pkg_craft, "logfit": lf}
 	if out_dir != "":
@@ -712,7 +742,7 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 			return _refuse([Checks.issue("write_failed", "error", werr, "check that the folder can be written")], rows_tbl)
 	_say("Done", 1.0)
 	return {"ok": true, "errors": [], "warnings": warns, "banners": rep.banners, "grade": letter, "grade_meaning": Grade.MEANING[letter],
-		"grade_reasons": caps, "fly_next": fly, "cli": rep.cli, "report_md": md, "package_dir": out_dir, "model_id": c.id,
+		"grade_reasons": caps, "fly_next": fly, "cli": rep.cli, "report_md": md, "package_dir": out_dir, "model_id": c.id, "propwash_calibration": Calibrate.summary(pwc),
 		"plant": p, "fc": cfg, "craft": pkg_craft, "logfit": lf, "sessions": rows_tbl, "runtime_s": rep.runtime}
 
 

@@ -67,11 +67,12 @@ WHAT CHANGES
       flow and gusts of the wake the quad left behind, its descent curve
       and vortex ring state - goes into the model's props (descending,
       dirty_air's descent curve replaces the props' own inflow, so nothing
-      counts twice). Each model sets dirty_air's wash, wake and gust for
-      its quad (plant.json dirty_air_wash, dirty_air_wake, dirty_air_gust;
-      freestyle5 0.7, 1 and 10.5; freestyle35 1, 1 and 2.2) and a light
-      turbulence in calm air (turb_base_ms), so that the gyro shakes as
-      much as the real quad's did in its logs. Dropping straight down and
+      counts twice). dirty_air's wash and wake stay its own (1); each
+      model sets the gusts of the old wake (plant.json dirty_air_gust;
+      freestyle5 6.79, freestyle35 4.01) and a light turbulence in calm
+      air (turb_base_ms; 0.249 and 0.193 m/s), calibrated so that the gyro
+      shakes as much as the real quad's did in its logs: a drop and catch
+      as its worst moments, a hover as its calm ones. Dropping straight down and
       punching out is the worst case. Without dirty_air the quad flies in
       clean air: no prop wash, only the light calm-air turbulence
     - the game keeps its inputs and arming, OSD and camera (its camera
@@ -148,6 +149,16 @@ MODELS... (THE MODEL MANAGER)
   until the new one is ready. A model from before the manager shows "inputs
   unknown": add logs to rebuild it. The top speed is not measurable from
   most logs: enter it in Parameters to set the body drag.
+  Prop wash: the build flies the new model through dirty_air's air (no
+  map, high up, a few dozen times, in the background: under a minute for
+  a 4 kHz quad on most computers, about twice that at 8 kHz) and sizes the
+  old wake's gusts to the shake of the logs' drops and catches and the
+  calm-air turbulence to their calm hovers; the report says "Prop wash
+  calibrated: drop and catch ... (log ...), calm ... (log ...)", or why
+  not (dirty_air not installed, no calm hovers or no drops in the logs:
+  class values, and what to fly). A model calibrated with another version
+  of dirty_air than the one installed offers "Recalibrate prop wash",
+  which runs only that step.
 
 
 WITH THE OTHER MODS
