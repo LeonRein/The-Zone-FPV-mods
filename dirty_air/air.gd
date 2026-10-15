@@ -140,6 +140,13 @@ var _tilt := Vector2.ZERO
 var _sh := [Vector2.ZERO, Vector2.ZERO]  # the shake resonator: position, velocity
 var _rng := RandomNumberGenerator.new()
 var _ray: PhysicsRayQueryParameters3D = null
+var _ray_rid := RID()            # the body the ray (and the probe) leave out
+var _probe: PhysicsShapeQueryParameters3D = null   # a sphere round the props' rays: nothing in it, no ray hits
+var _probe_ball: SphereShape3D = null
+var _gs: Node = null             # the game's ZGamestate
+var _geom_prop = null            # what _model_geom's text was made of
+var _geom_wheelbase = null
+var _geom_ducted = null
 var _local: Array = []          # prop positions in the quad's frame
 var _r := 0.02
 var _area := 0.005
@@ -155,6 +162,10 @@ var _wr := PackedFloat32Array()
 var _wu := PackedFloat32Array()
 var _wt := PackedFloat64Array()
 var _wfree := PackedByteArray()
+# what the scan needs of each puff, made when it is left: 2 k u0 r0, r0 squared and u0 r0 (of the stored, single precision r0 and u0)
+var _wq := PackedFloat64Array()
+var _wr2 := PackedFloat64Array()
+var _wur := PackedFloat64Array()
 var _wnext := 0
 var _wlast_t := -1.0
 var _wlast_p := Vector3.ZERO
@@ -220,6 +231,9 @@ func use_drone(vehicle_id: String) -> void:
 			if _model.has(k):
 				drone[k] = _model[k]
 		_model_geom = _geom_key()
+		_geom_prop = _model.get("prop_mm", "")
+		_geom_wheelbase = _model.get("wheelbase_mm", "")
+		_geom_ducted = _model.get("ducted", "")
 	_r = clampf(float(drone["prop_mm"]), 10.0, 400.0) / 2000.0
 	_area = 4.0 * PI * _r * _r
 	var s := clampf(float(drone["wheelbase_mm"]), 20.0, 1000.0) / 1000.0 / (2.0 * sqrt(2.0))
@@ -227,6 +241,20 @@ func use_drone(vehicle_id: String) -> void:
 	_local = [Vector3(-s, 0, -s), Vector3(s, 0, -s), Vector3(-s, 0, s), Vector3(s, 0, s)]
 	_frame = s * sqrt(2.0) + _r
 	clear_wake()
+
+
+## _geom_key() == _model_geom, without making the text when what it is made of is as it was
+func _geom_unchanged() -> bool:
+	if not model_flown():
+		return _model_geom == ""
+	if _model_geom != "":
+		var pm = _model.get("prop_mm", "")
+		var wb = _model.get("wheelbase_mm", "")
+		var du = _model.get("ducted", "")
+		if typeof(pm) == typeof(_geom_prop) and typeof(wb) == typeof(_geom_wheelbase) and typeof(du) == typeof(_geom_ducted) \
+				and pm == _geom_prop and wb == _geom_wheelbase and du == _geom_ducted:
+			return true
+	return _geom_key() == _model_geom
 
 
 func _geom_key() -> String:
@@ -282,9 +310,16 @@ func ceiling_ratio(z: float) -> float:
 
 
 func _vehicle_id() -> String:
-	var gs := get_node_or_null("/root/ZGamestate")
+	var gs := _game_state()
 	var v = gs.get("selected_vehicle_id") if gs != null else null
 	return str(v) if v != null else ""
+
+
+## The game's ZGamestate autoload (looked for again only when it is gone)
+func _game_state() -> Node:
+	if not is_instance_valid(_gs) or not _gs.is_inside_tree():
+		_gs = get_node_or_null("/root/ZGamestate")
+	return _gs
 
 
 ## Forgets the wake left behind
@@ -296,6 +331,9 @@ func clear_wake() -> void:
 	_wt.resize(WAKE_SLOTS)
 	_wt.fill(-1.0)
 	_wfree.resize(WAKE_SLOTS)
+	_wq.resize(WAKE_SLOTS)
+	_wr2.resize(WAKE_SLOTS)
+	_wur.resize(WAKE_SLOTS)
 	_near = PackedInt32Array()
 	_wlast_t = -1.0
 	puffs = 0
@@ -320,6 +358,11 @@ func _leave_puff(at: Vector3, up: Vector3, vh: float, c: float, vx: float) -> vo
 	_wu[n] = u0
 	_wt[n] = _clock
 	_wfree[n] = 0
+	var r0 := _wr[n]
+	var uu := _wu[n]
+	_wq[n] = 2.0 * WAKE_SPREAD * uu * r0
+	_wr2[n] = r0 * r0
+	_wur[n] = uu * r0
 
 
 ## Goes through the puffs: drops the spent ones, frees the ones the quad has
@@ -336,9 +379,8 @@ func _scan(pos: Vector3, speed: float, wind: Vector3, dt: float) -> void:
 			continue
 		var age := _clock - t0
 		var r0 := _wr[n]
-		var u0 := _wu[n]
-		var r := sqrt(r0 * r0 + 2.0 * WAKE_SPREAD * u0 * r0 * age)
-		var u := u0 * r0 / r
+		var r := sqrt(_wr2[n] + _wq[n] * age)
+		var u := _wur[n] / r
 		if age > WAKE_LIFE or u < WAKE_SLOWEST:
 			_wt[n] = -1.0
 			continue
@@ -367,9 +409,8 @@ func _old_wake(pts: Array[Vector3], wind: Vector3, speeds: Array, dirs: Array[Ve
 			continue
 		var age := _clock - t0
 		var r0 := _wr[n]
-		var u0 := _wu[n]
-		var r := sqrt(r0 * r0 + 2.0 * WAKE_SPREAD * u0 * r0 * age)
-		var u := u0 * r0 / r
+		var r := sqrt(_wr2[n] + _wq[n] * age)
+		var u := _wur[n] / r
 		var c := _wp[n] + _wd[n] * ((r - r0) / WAKE_SPREAD) + wind * age
 		var inv := -0.693 / (r * r)
 		for k in 5:
@@ -420,13 +461,13 @@ func _physics_process(dt: float) -> void:
 	if not ext and not (p.get("_SETTINGS") is Dictionary):
 		return
 	var body := p as RigidBody3D
-	var gs := get_node_or_null("/root/ZGamestate")
+	var gs := _game_state()
 	if gs != null and gs.get("is_paused") == true:
 		return
 	if _specs == null:
 		return
 	var vid := _vehicle_id()
-	if vid != drone_id or _specs.generation() != _spec_gen or _geom_key() != _model_geom:
+	if vid != drone_id or _specs.generation() != _spec_gen or not _geom_unchanged():
 		use_drone(vid)
 		if get_parent() != null and get_parent().has_method("drone_changed"):
 			var vh := hover_wake(float(body.mass))
@@ -437,8 +478,10 @@ func _physics_process(dt: float) -> void:
 		return
 	_clock += dt
 	_tick += 1
-	var origin := body.global_position
-	if origin.distance_to(_last_pos) > 3.0 + 2.0 * body.linear_velocity.length() * dt:
+	var gt := body.global_transform
+	var origin := gt.origin
+	var lv := body.linear_velocity
+	if origin.distance_to(_last_pos) > 3.0 + 2.0 * lv.length() * dt:
 		clear_wake()   # a respawn: the air here is not the quad's
 	_last_pos = origin
 	var armed: bool = p.has_method("is_armed") and bool(p.call("is_armed")) and p.get("turtle_mode_active") != true
@@ -457,11 +500,11 @@ func _physics_process(dt: float) -> void:
 		return
 	var thrust := maxf(float(_model.get("thrust", 0.0)), 0.0) if ext \
 		else maxf(float(p.call("get_thrust_at_rpm", float(p.get("current_motor_rpm")))), 0.0)
-	var basis := body.global_transform.basis
+	var basis := gt.basis
 	var up := basis.y.normalized()
 	var wind = gs.get("current_wind_effect") if gs != null else null
 	var windv: Vector3 = wind if wind is Vector3 else Vector3.ZERO
-	var air: Vector3 = body.linear_velocity - windv
+	var air: Vector3 = lv - windv
 	var vh := sqrt(maxf(thrust, 1e-4) / (2.0 * RHO * _area))
 
 	# the wake left behind, at the quad's centre and each prop
@@ -474,7 +517,7 @@ func _physics_process(dt: float) -> void:
 	var eddy := _frame
 	if ws > 0.0:
 		if _tick % 4 == 0:
-			_scan(origin, body.linear_velocity.length(), windv, dt)
+			_scan(origin, lv.length(), windv, dt)
 		eddy = _old_wake(pts, windv, old, odir, edge)
 	wake_flow = odir[0] * old[0] * ws
 	var rel := air - wake_flow
@@ -510,12 +553,12 @@ func _physics_process(dt: float) -> void:
 	var tn := 1.0 / (TAU * fc)
 	var k := minf(dt / tn, 1.0)
 	for i in 4:
-		_noise[i] += -_noise[i] * k + sqrt(2.0 * k) * _gauss()
+		_noise[i] += -_noise[i] * k + sqrt(2.0 * k) * _rng.randfn(0.0, 1.0)
 	# and the ring round the whole quad, lifting one side more than the
 	# other: a tilt across the props, at the frame's own (slower) frequency
 	var ft := clampf(0.5 * vh / (TAU * _frame), 1.0, 40.0)
 	var kt := minf(dt * TAU * ft, 1.0)
-	_tilt += -_tilt * kt + Vector2(_gauss(), _gauss()) * sqrt(2.0 * kt)
+	_tilt += -_tilt * kt + Vector2(_rng.randfn(0.0, 1.0), _rng.randfn(0.0, 1.0)) * sqrt(2.0 * kt)
 	var wash := float(cfg["wash"]) * float(_model.get("wash", 1.0) if ext else drone.get("wash", 1.0))
 	var rough := 1.0 if bool(drone.get("ducted", true)) else OPEN_ROUGH
 	var sigma := VRS_SIGMA * rough * wake * strength * wash
@@ -526,7 +569,7 @@ func _physics_process(dt: float) -> void:
 	var scale := 0.4 * eddy
 	var fg := clampf((rel.length() + vh) / (TAU * scale), 2.0, 60.0)
 	var kg := minf(dt * TAU * fg, 1.0)
-	_gust_all += -_gust_all * kg + sqrt(2.0 * kg) * _gauss()
+	_gust_all += -_gust_all * kg + sqrt(2.0 * kg) * _rng.randfn(0.0, 1.0)
 	var shared := exp(-2.0 * absf((_local[0] as Vector3).x) / scale)
 	var slope := gust_slope(_x)
 	gusts = 0.0
@@ -538,18 +581,34 @@ func _physics_process(dt: float) -> void:
 	var space := body.get_world_3d().direct_space_state if body.get_world_3d() != null else null
 	if _ray == null:
 		_ray = PhysicsRayQueryParameters3D.new()
-	_ray.exclude = [body.get_rid()]
+	var rid := body.get_rid()
+	if rid != _ray_rid:
+		_ray_rid = rid
+		_ray.exclude = [rid]
+		if _probe != null:
+			_probe.exclude = [rid]
+	# nothing within reach of any of the rays (a sphere round all of them): none of them hits, and
+	# eight rays are dearer than this one look
+	var rays := space != null and (ge > 0.0 or ce > 0.0) and _anything_near(space, origin)
+	# (the same in every prop's turn)
+	var sg_noise := sqrt(2.0 * kg)
+	var sh_a := sqrt(shared)
+	var sh_b := sqrt(1.0 - shared)
+	var sqrt2 := sqrt(2.0)
+	var sqrt_vrs_a := sqrt(1.0 - VRS_TILT)
+	var sqrt_vrs_b := sqrt(VRS_TILT)
+	var gust_k := WAKE_TURB * float(_model.get("gust", 1.0))
 	for i in 4:
 		var at: Vector3 = pts[i + 1]
 		var g := 1.0
 		var c := 1.0
-		if space != null and ge > 0.0:
+		if rays and ge > 0.0:
 			_ray.from = at
 			_ray.to = at - up * (GROUND_REACH * _r)
 			var hit := space.intersect_ray(_ray)
 			if not hit.is_empty():
 				g = ground_ratio(at.distance_to(hit["position"]))
-		if space != null and ce > 0.0:
+		if rays and ce > 0.0:
 			_ray.from = at
 			_ray.to = at + up * (CEILING_REACH * _r)
 			var hit2 := space.intersect_ray(_ray)
@@ -560,21 +619,20 @@ func _physics_process(dt: float) -> void:
 		# the old wake here: its flow through this prop against the centre's
 		# (rocking the quad at the edge of a column), and its gusts
 		var here: Vector3 = odir[i + 1] * old[i + 1] * ws
-		var inflow := clampf(1.0 - slope * (here - wake_flow).dot(-up) / vh, 0.3, 2.0)
 		var sg := minf(slope * WAKE_TURB * edge[i + 1] * ws * wash * rough / vh, 1.0)
-		_gust[i] += -_gust[i] * kg + sqrt(2.0 * kg) * _gauss()
+		_gust[i] += -_gust[i] * kg + sg_noise * _rng.randfn(0.0, 1.0)
 		gusts += sg * 0.25
-		var gust: float = sg * (sqrt(shared) * _gust_all + sqrt(1.0 - shared) * _gust[i])
 		var lp: Vector3 = _local[i]
-		var side := Vector2(signf(lp.x), signf(lp.z)) / sqrt(2.0)
-		var vrs: float = sqrt(1.0 - VRS_TILT) * _noise[i] + sqrt(VRS_TILT) * _tilt.dot(side)
+		var side := Vector2(signf(lp.x), signf(lp.z)) / sqrt2
+		var vrs: float = sqrt_vrs_a * _noise[i] + sqrt_vrs_b * _tilt.dot(side)
 		if ext:
 			# for the model: the air itself (its flow and gusts along the axis, m/s), and the ring
 			# state's fluctuation; the model's props turn them into thrust
-			prop_axial[i] = (here - wake_flow).dot(up) + WAKE_TURB * float(_model.get("gust", 1.0)) * edge[i + 1] * ws * wash * rough \
-				* (sqrt(shared) * _gust_all + sqrt(1.0 - shared) * _gust[i])
+			prop_axial[i] = (here - wake_flow).dot(up) + gust_k * edge[i + 1] * ws * wash * rough * (sh_a * _gust_all + sh_b * _gust[i])
 			prop_vrs[i] = sigma * vrs
 			continue
+		var inflow := clampf(1.0 - slope * (here - wake_flow).dot(-up) / vh, 0.3, 2.0)
+		var gust: float = sg * (sh_a * _gust_all + sh_b * _gust[i])
 		var ratio: float = mean * (1.0 + sigma * vrs) * inflow * clampf(1.0 + gust, 0.0, 2.0) * ground[i] * ceiling[i]
 		var extra: float = thrust * 0.25 * (ratio - 1.0)
 		if extra != 0.0:
@@ -612,6 +670,22 @@ func _physics_process(dt: float) -> void:
 		_sh[1] += (noise_in - 2.0 * SHAKE_ZETA * w0 * _sh[1] - w0 * w0 * _sh[0]) * h
 		_sh[0] += _sh[1] * h
 	_set_shake(body, _sh[0] * amp)
+
+
+## Whether anything solid is within reach of the rays under and over the props (from the props' discs, down
+## GROUND_REACH or up CEILING_REACH radii): a sphere round the quad that holds all of them
+func _anything_near(space: PhysicsDirectSpaceState3D, origin: Vector3) -> bool:
+	if _probe == null:
+		_probe = PhysicsShapeQueryParameters3D.new()
+		_probe_ball = SphereShape3D.new()
+		_probe.shape = _probe_ball
+		_probe.exclude = [_ray_rid]
+	var reach := maxf(GROUND_REACH, CEILING_REACH) * _r
+	var radius := sqrt(_frame * _frame + reach * reach) * 1.05 + 0.01
+	if _probe_ball.radius != radius:
+		_probe_ball.radius = radius
+	_probe.transform = Transform3D(Basis.IDENTITY, origin)
+	return not space.intersect_shape(_probe, 1).is_empty()
 
 
 # Puts the jitter in place: the quad is turned by the change since the last

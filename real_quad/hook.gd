@@ -51,6 +51,22 @@ var _orig_body := {}                # body properties restored when switching ba
 var _gen := -1                      # mod.generation the model was last given its settings for
 var _vid := ""                      # vehicle the settings were looked up for
 var _bat_key := ""                  # battery_sag's pack this model drives ("vehicle model", "" = none)
+var _key_vid := ""                  # what _bat_key's text is made of ...
+var _key_model: RefCounted = null
+var _key_text := ""                 # ... the text made of them
+# The other mods' nodes, looked for again only when the one found is gone (all of them every tick otherwise)
+var _air_n: Node = null
+var _props_n: Node = null
+var _props_ok := false              # prop_damage's Props has set_model()
+var _bat_n: Node = null
+var _bat_ok := false                # battery_sag's Battery has drive()
+var _handler: Node = null           # the race handler
+var _handler_api := false           # ... and it has an api
+var _rates_type = null              # the game's rates last handed to the model (type, roll, pitch, yaw), as _rates_key was
+var _rates_roll = null
+var _rates_pitch = null
+var _rates_yaw = null
+var _spin := [0.0, 0.0, 0.0, 0.0]   # the rotors' spin handed to prop_damage
 
 
 static func find_mod(tree: SceneTree) -> Node:
@@ -84,7 +100,7 @@ func before_physics() -> void:
 		_vid = vid
 	if model != null:
 		_apply_game_settings()
-		model.apply_air(mod.air_node(), bool(mod.cfg["ground_ceiling_effect"]))
+		model.apply_air(_air_node(), bool(mod.cfg["ground_ceiling_effect"]))
 		_apply_props()
 		_apply_battery(vid)
 
@@ -199,15 +215,22 @@ func _apply_game_settings() -> void:
 	if _rates_mode == "game" and _zs != null:
 		var r = _zs.get("RATES")
 		if r is Dictionary:
-			var key := [r.get("type"), r.get("roll"), r.get("pitch"), r.get("yaw")]
-			if key != _rates_key:
-				_rates_key = key
+			var t = r.get("type")
+			var ro = r.get("roll")
+			var pi = r.get("pitch")
+			var ya = r.get("yaw")
+			if _rates_key.is_empty() or t != _rates_type or ro != _rates_roll or pi != _rates_pitch or ya != _rates_yaw:
+				_rates_key = [t]       # (non-empty: handed over once)
+				_rates_type = t
+				_rates_roll = ro
+				_rates_pitch = pi
+				_rates_yaw = ya
 				model.set_game_rates(r)
 
 
 ## The game's max-rate OSD readout (curr_max_rate, every 60 ticks, when its option is on) from the rates in use
 func _max_rate_osd() -> void:
-	if _gs == null or _gs.get("enable_current_max_rate_osd") != true or Engine.get_physics_frames() % 60 != 0:
+	if Engine.get_physics_frames() % 60 != 0 or _gs == null or _gs.get("enable_current_max_rate_osd") != true:
 		return
 	var sp: Vector4 = host.get("stick_pos")
 	_gs.OSD_VALUES["curr_max_rate"] = "%.0f" % model.current_max_rate_dps({"roll": sp.x, "pitch": sp.y, "yaw": sp.w})
@@ -230,11 +253,12 @@ func _apply_settings(vid: String) -> void:
 ## prop_damage's Props: it hands over how hard each rotor turns, for the wear of a hit, and does not
 ## push or shake the body itself any more); undamaged props without prop_damage.
 func _apply_props() -> void:
-	var pd: Node = mod.props_node()
-	if pd == null or not pd.has_method("set_model"):
+	var pd := _props_node()
+	if pd == null or not _props_ok:
 		model.clear_props()
 		return
-	var st: Dictionary = pd.call("set_model", Array(model.spin_share()))
+	model.spin_share_into(_spin)
+	var st: Dictionary = pd.call("set_model", _spin)
 	model.set_props(st["thrust"], st["imbalance"])
 
 
@@ -244,19 +268,43 @@ func _apply_props() -> void:
 func _apply_battery(vid: String) -> void:
 	var c: Vector3 = model.take_charge()
 	var amps := c.x / c.y if c.y > 0.0 else 0.0
-	var bat: Node = mod.battery_node()
-	if bat == null or not bat.has_method("drive"):
+	var bat := _battery_node()
+	if bat == null or not _bat_ok:
 		_bat_key = ""
 		model.use_identified_sag()
 		mod.own_pack_step(model, amps, c.y, c.z)
 		return
-	var key := vid + " " + str(model.get_id())
-	if key != _bat_key or not bool(bat.get("external")):
+	if vid != _key_vid or model != _key_model:
+		_key_vid = vid
+		_key_model = model
+		_key_text = vid + " " + str(model.get_id())
+	if _key_text != _bat_key or not bool(bat.get("external")):
 		bat.call("external_pack", vid, mod.pack_spec(model))
-		_bat_key = key
+		_bat_key = _key_text
 	if c.y > 0.0:
 		bat.call("drive", amps, c.y)
 	model.set_pack(float(bat.call("source_volts")), float(bat.call("resistance", float(bat.call("soc")))), float(bat.call("ocv", 1.0)))
+
+
+# The other mods' nodes (mod.air_node() ...), kept while they are in the tree
+func _air_node() -> Node:
+	if not is_instance_valid(_air_n) or not _air_n.is_inside_tree():
+		_air_n = mod.air_node()
+	return _air_n
+
+
+func _props_node() -> Node:
+	if not is_instance_valid(_props_n) or not _props_n.is_inside_tree():
+		_props_n = mod.props_node()
+		_props_ok = _props_n != null and _props_n.has_method("set_model")
+	return _props_n
+
+
+func _battery_node() -> Node:
+	if not is_instance_valid(_bat_n) or not _bat_n.is_inside_tree():
+		_bat_n = mod.battery_node()
+		_bat_ok = _bat_n != null and _bat_n.has_method("drive")
+	return _bat_n
 
 
 func _release_battery() -> void:
@@ -274,8 +322,11 @@ func _release_battery() -> void:
 func _guard_race_upload() -> void:
 	if not mod.on:
 		return
-	var handler := host.get_node_or_null(TRACK_HANDLER_PATH)
-	if handler == null or not ("api" in handler):
+	if not is_instance_valid(_handler) or not _handler.is_inside_tree():
+		_handler = host.get_node_or_null(TRACK_HANDLER_PATH)
+		_handler_api = _handler != null and "api" in _handler
+	var handler := _handler
+	if not _handler_api:
 		return
 	var api = handler.get("api")
 	if api is ApiGuard:

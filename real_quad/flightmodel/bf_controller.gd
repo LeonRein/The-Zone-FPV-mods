@@ -10,7 +10,9 @@ extends RefCounted
 ##
 ## Style note: the code deliberately stays close to the C source - same function boundaries, same
 ## variable names, filter states as flat packed arrays instead of filter objects - so every line
-## can be checked against the firmware, and to keep the 4 kHz loop cheap in GDScript. A Python
+## can be checked against the firmware, and to keep the 4 kHz loop cheap in GDScript. Where the loop
+## is hottest (the RPM notches, the PT3 smoothing of the RC input, the mixer) the loops are fused or
+## written out and the states are single variables, which gives the same numbers bit for bit. A Python
 ## reference implementation of the same port, validated open-loop against logged P/I/D/F terms,
 ## is compared with this file sample by sample (not part of the mod package).
 ##
@@ -56,6 +58,14 @@ var setpoint_rate := PackedFloat64Array([0, 0, 0])
 var rc_deflection := PackedFloat64Array([0, 0, 0])
 var rc_deflection_abs := PackedFloat64Array([0, 0, 0])
 var max_rc_rate := PackedFloat64Array([0, 0, 0])
+# cfg's rates as numbers (update_rates()), and the deadbands and rate limits of the axes
+var _rates_type: int = 0
+var _rc_rates := PackedFloat64Array([0, 0, 0])
+var _rates := PackedFloat64Array([0, 0, 0])
+var _rc_expo := PackedFloat64Array([0, 0, 0])
+var _deadband := PackedFloat64Array([0, 0, 0])
+var _rate_limit := PackedFloat64Array([0, 0, 0])
+var _mincheck: float = 1050.0
 var throttle_lut := PackedFloat64Array()
 var rx_data_new := false
 var last_rx_time_us: int = 0
@@ -70,15 +80,31 @@ var rx_to_smooth := PackedFloat64Array([0, 0, 0, 0])
 var rc_throttle_smoothed: float = 1000.0
 var auto_sp: float
 var auto_thr: float
-# PT3 states: setpoint (4 channels) and feedforward (3)
-var sp_k := PackedFloat64Array([1, 1, 1, 1])
-var sp_s1 := PackedFloat64Array([0, 0, 0, 0])
-var sp_s2 := PackedFloat64Array([0, 0, 0, 0])
-var sp_s := PackedFloat64Array([0, 0, 0, 0])
-var ffs_k: float = 1.0
-var ffs_s1 := PackedFloat64Array([0, 0, 0])
-var ffs_s2 := PackedFloat64Array([0, 0, 0])
-var ffs_s := PackedFloat64Array([0, 0, 0])
+# PT3 states: setpoint of roll, pitch, yaw (sp_r, sp_p, sp_y), throttle (sp_t) and the feedforward of the three axes
+# (ffs_r, ffs_p, ffs_y), three stages each; single variables because process_rc_command() runs at every PID step
+var sp_k: float = 1.0           # the gain of the axes' setpoints and feedforward
+var sp_k_thr: float = 1.0       # ... of the throttle
+var sp_r1: float = 0.0
+var sp_r2: float = 0.0
+var sp_r3: float = 0.0
+var sp_p1: float = 0.0
+var sp_p2: float = 0.0
+var sp_p3: float = 0.0
+var sp_y1: float = 0.0
+var sp_y2: float = 0.0
+var sp_y3: float = 0.0
+var sp_t1: float = 0.0
+var sp_t2: float = 0.0
+var sp_t3: float = 0.0
+var ffs_r1: float = 0.0
+var ffs_r2: float = 0.0
+var ffs_r3: float = 0.0
+var ffs_p1: float = 0.0
+var ffs_p2: float = 0.0
+var ffs_p3: float = 0.0
+var ffs_y1: float = 0.0
+var ffs_y2: float = 0.0
+var ffs_y3: float = 0.0
 # feedforward
 var ff_smooth_tau: float
 var ff_jitter_inv: float
@@ -133,6 +159,7 @@ var dmax_lpf_s1 := PackedFloat64Array([0, 0, 0])
 var dmax_lpf_s := PackedFloat64Array([0, 0, 0])
 # dterm lowpass 1 (type, k, 3 states per axis) and 2
 var dl1_type: int
+var _dl1_raw_type: int      # cfg's dterm_lpf1_type
 var dl1_k: float = 1.0
 var dl1_on := false
 var dl1_s := PackedFloat64Array([0, 0, 0, 0, 0, 0, 0, 0, 0])   # 3 axes x 3 stages
@@ -284,6 +311,10 @@ func _init(p_cfg: Dictionary, p_use_rpm_filter: bool = true) -> void:
 	gyro_dt = float(cfg.looptime_us) * 1e-6
 	dt = gyro_dt * float(cfg.pid_process_denom)
 	pid_freq = 1.0 / dt
+	for a in 3:
+		_deadband[a] = float(cfg.yaw_deadband) if a == 2 else float(cfg.deadband)
+		_rate_limit[a] = float(cfg.rate_limits[a])
+	_mincheck = float(cfg.mincheck)
 	update_rates()
 	_build_throttle_lut()
 	auto_sp = 1.5 / (1.0 + float(cfg.rc_smoothing_auto_factor) / 10.0)
@@ -329,6 +360,7 @@ func _init(p_cfg: Dictionary, p_use_rpm_filter: bool = true) -> void:
 	dyn_lpf_min = float(cfg.dterm_lpf1_dyn_hz[0])
 	dyn_lpf_max = float(cfg.dterm_lpf1_dyn_hz[1])
 	dyn_lpf_expo = float(cfg.dterm_lpf1_dyn_expo)
+	_dl1_raw_type = int(cfg.dterm_lpf1_type)
 	var l1hz := dyn_lpf_min if dyn_lpf_min > 0.0 else float(cfg.dterm_lpf1_static_hz)
 	var s1 := _lp_setup(int(cfg.dterm_lpf1_type), l1hz, dt)
 	dl1_on = s1[0]; dl1_type = s1[1]; dl1_k = s1[2]
@@ -394,31 +426,36 @@ func _init(p_cfg: Dictionary, p_use_rpm_filter: bool = true) -> void:
 # ------------------------------------------------------------------ rc.c
 ## The rates of cfg (rates_type, rc_rates, rates, rc_expo) changed: the stick's full rate is worked out again
 func update_rates() -> void:
+	_rates_type = int(cfg.rates_type)
+	for a in 3:
+		_rc_rates[a] = float(cfg.rc_rates[a])
+		_rates[a] = float(cfg.rates[a])
+		_rc_expo[a] = float(cfg.rc_expo[a])
 	for a in 3:
 		max_rc_rate[a] = apply_rates(a, 1.0, 1.0)
 
 
 func apply_rates(axis: int, rc: float, rc_abs: float) -> float:
-	if int(cfg.rates_type) == 1:   # KISS (as the game's: rc_rates/100 = rate, rates/100 = rate factor, rc_expo/100 = curve)
-		var ke := float(cfg.rc_expo[axis]) / 100.0
-		var kc := (pow(rc, 3) * ke + rc * (1.0 - ke)) * (float(cfg.rc_rates[axis]) / 100.0)
-		return 200.0 * kc / clampf(1.0 - rc_abs * float(cfg.rates[axis]) / 100.0, 0.01, 1.0)
-	if int(cfg.rates_type) == 3:   # ACTUAL
-		var expof := float(cfg.rc_expo[axis]) / 100.0
+	if _rates_type == 1:   # KISS (as the game's: rc_rates/100 = rate, rates/100 = rate factor, rc_expo/100 = curve)
+		var ke := _rc_expo[axis] / 100.0
+		var kc := (pow(rc, 3) * ke + rc * (1.0 - ke)) * (_rc_rates[axis] / 100.0)
+		return 200.0 * kc / clampf(1.0 - rc_abs * _rates[axis] / 100.0, 0.01, 1.0)
+	if _rates_type == 3:   # ACTUAL
+		var expof := _rc_expo[axis] / 100.0
 		expof = rc_abs * (pow(rc, 5) * expof + rc * (1.0 - expof))
-		var center := float(cfg.rc_rates[axis]) * 10.0
-		var stick_mov := maxf(0.0, float(cfg.rates[axis]) * 10.0 - center)
+		var center := _rc_rates[axis] * 10.0
+		var stick_mov := maxf(0.0, _rates[axis] * 10.0 - center)
 		return rc * center + stick_mov * expof
 	# BETAFLIGHT rates
-	if int(cfg.rc_expo[axis]) != 0:
-		var e := float(cfg.rc_expo[axis]) / 100.0
+	if int(_rc_expo[axis]) != 0:
+		var e := _rc_expo[axis] / 100.0
 		rc = rc * pow(rc_abs, 3) * e + rc * (1.0 - e)
-	var rr := float(cfg.rc_rates[axis]) / 100.0
+	var rr := _rc_rates[axis] / 100.0
 	if rr > 2.0:
 		rr += 14.54 * (rr - 2.0)
 	var ang := 200.0 * rr * rc
-	if int(cfg.rates[axis]) != 0:
-		ang *= 1.0 / clampf(1.0 - rc_abs * float(cfg.rates[axis]) / 100.0, 0.01, 1.0)
+	if int(_rates[axis]) != 0:
+		ang *= 1.0 / clampf(1.0 - rc_abs * _rates[axis] / 100.0, 0.01, 1.0)
 	return ang
 
 
@@ -483,7 +520,7 @@ func rx_frame(rc_data: PackedFloat64Array, frame_t_us: int) -> void:
 		if a == 2:
 			v = -v
 		rc_command[a] = v
-	var mc := float(cfg.mincheck)
+	var mc := _mincheck
 	var tmp := clampf(rc_data[3], mc, 2000.0)
 	rc_command[3] = _throttle_lookup(int((tmp - mc) * 1000.0 / (2000.0 - mc)))
 	var pct := clampf((rc_data[3] - mc) * 100.0 / (2000.0 - mc), 0.0, 100.0)
@@ -541,11 +578,8 @@ func _update_smoothing_cutoffs() -> void:
 	var th: float = float(cfg.rc_smoothing_throttle_cutoff)
 	if th == 0.0:
 		th = maxf(15.0, smoothed_rx_rate_hz * auto_thr)
-	var ksp := pt3_gain(sp, dt)
-	for a in 3:
-		sp_k[a] = ksp
-	ffs_k = ksp
-	sp_k[3] = pt3_gain(th, dt)
+	sp_k = pt3_gain(sp, dt)
+	sp_k_thr = pt3_gain(th, dt)
 
 
 func _calc_feedforward(axis: int) -> void:
@@ -610,52 +644,47 @@ func process_rc_command() -> void:
 			_update_ff_filters()
 			_update_smoothing_cutoffs()
 		for a in 3:
-			var db: float = float(cfg.yaw_deadband) if a == 2 else float(cfg.deadband)
-			var rcf := rc_command[a] / (500.0 - db)
+			var rcf := rc_command[a] / (500.0 - _deadband[a])
 			rc_deflection[a] = rcf
 			var rabs := absf(rcf)
 			rc_deflection_abs[a] = rabs
-			var lim := float(cfg.rate_limits[a])
+			var lim := _rate_limit[a]
 			raw_setpoint[a] = clampf(apply_rates(a, rcf, rabs), -lim, lim)
 			_calc_feedforward(a)
 		for i in 4:
 			rx_to_smooth[i] = rc_command[3] if i == 3 else raw_setpoint[i]
 	# PT3 smoothing of the setpoints, their feedforward and the throttle
-	for a in 3:
-		var k := sp_k[a]
-		var s1 := sp_s1[a]
-		var s2 := sp_s2[a]
-		var s3 := sp_s[a]
-		var x := rx_to_smooth[a]
-		s1 += k * (x - s1)
-		s2 += k * (s1 - s2)
-		s3 += k * (s2 - s3)
-		sp_s1[a] = s1
-		sp_s2[a] = s2
-		sp_s[a] = s3
-		setpoint_rate[a] = s3
-		s1 = ffs_s1[a]
-		s2 = ffs_s2[a]
-		s3 = ffs_s[a]
-		x = ff_raw[a]
-		s1 += ffs_k * (x - s1)
-		s2 += ffs_k * (s1 - s2)
-		s3 += ffs_k * (s2 - s3)
-		ffs_s1[a] = s1
-		ffs_s2[a] = s2
-		ffs_s[a] = s3
-		ff_smoothed[a] = s3
-	var kt := sp_k[3]
-	var t1 := sp_s1[3]
-	var t2 := sp_s2[3]
-	var t3 := sp_s[3]
-	t1 += kt * (rx_to_smooth[3] - t1)
-	t2 += kt * (t1 - t2)
-	t3 += kt * (t2 - t3)
-	sp_s1[3] = t1
-	sp_s2[3] = t2
-	sp_s[3] = t3
-	rc_throttle_smoothed = t3
+	var k := sp_k
+	sp_r1 += k * (rx_to_smooth[0] - sp_r1)
+	sp_r2 += k * (sp_r1 - sp_r2)
+	sp_r3 += k * (sp_r2 - sp_r3)
+	setpoint_rate[0] = sp_r3
+	sp_p1 += k * (rx_to_smooth[1] - sp_p1)
+	sp_p2 += k * (sp_p1 - sp_p2)
+	sp_p3 += k * (sp_p2 - sp_p3)
+	setpoint_rate[1] = sp_p3
+	sp_y1 += k * (rx_to_smooth[2] - sp_y1)
+	sp_y2 += k * (sp_y1 - sp_y2)
+	sp_y3 += k * (sp_y2 - sp_y3)
+	setpoint_rate[2] = sp_y3
+	k = sp_k_thr
+	sp_t1 += k * (rx_to_smooth[3] - sp_t1)
+	sp_t2 += k * (sp_t1 - sp_t2)
+	sp_t3 += k * (sp_t2 - sp_t3)
+	rc_throttle_smoothed = sp_t3
+	k = sp_k
+	ffs_r1 += k * (ff_raw[0] - ffs_r1)
+	ffs_r2 += k * (ffs_r1 - ffs_r2)
+	ffs_r3 += k * (ffs_r2 - ffs_r3)
+	ff_smoothed[0] = ffs_r3
+	ffs_p1 += k * (ff_raw[1] - ffs_p1)
+	ffs_p2 += k * (ffs_p1 - ffs_p2)
+	ffs_p3 += k * (ffs_p2 - ffs_p3)
+	ff_smoothed[1] = ffs_p3
+	ffs_y1 += k * (ff_raw[2] - ffs_y1)
+	ffs_y2 += k * (ffs_y1 - ffs_y2)
+	ffs_y3 += k * (ffs_y2 - ffs_y3)
+	ff_smoothed[2] = ffs_y3
 	rx_data_new = false
 
 
@@ -748,18 +777,6 @@ func gyro_update(rates_dps: PackedFloat64Array, telemetry_hz: PackedFloat64Array
 
 
 # ------------------------------------------------------------------ pid.c
-func _tpa_classic(arg: float) -> float:
-	var past := arg >= tpa_low_bp or tpa_low_bp <= 0.01
-	var rate := 0.0
-	if past or tpa_low_faded:
-		rate = tpa_mult * maxf(arg - tpa_bp, 0.0)
-		if tpa_low_always == 0 and not tpa_low_faded:
-			tpa_low_faded = true
-	else:
-		rate = tpa_low_mult * (tpa_low_bp - arg)
-	return 1.0 - rate
-
-
 var _gdt := PackedFloat64Array([0, 0, 0])   # pid_controller's scratch: the gyro for the D term
 func pid_controller() -> void:
 	ag_throttle_d *= ag_gain
@@ -850,7 +867,7 @@ func _dyn_lpf_update(throttle: float) -> void:
 	var curve := thr * (1.0 - thr) * expof + thr
 	var cutoff := (dyn_lpf_max - dyn_lpf_min) * curve + dyn_lpf_min
 	if dyn_lpf_min > 0.0:
-		var ft := int(cfg.dterm_lpf1_type)
+		var ft := _dl1_raw_type
 		if ft == 0:
 			dl1_k = pt1_gain(cutoff, dt)
 		elif ft == 1 or ft == 2:
@@ -896,7 +913,15 @@ func mix_table() -> void:
 	ag_s1 += ag_k * (td - ag_s1)
 	ag_s += ag_k * (ag_s1 - ag_s)
 	ag_throttle_d = ag_s
-	tpa_factor = _tpa_classic(clampf(throttle, 0.0, 1.0))
+	# TPA, classic (throttle is within 0..1 here)
+	var tpa_rate := 0.0
+	if throttle >= tpa_low_bp or tpa_low_bp <= 0.01 or tpa_low_faded:
+		tpa_rate = tpa_mult * maxf(throttle - tpa_bp, 0.0)
+		if tpa_low_always == 0 and not tpa_low_faded:
+			tpa_low_faded = true
+	else:
+		tpa_rate = tpa_low_mult * (tpa_low_bp - throttle)
+	tpa_factor = 1.0 - tpa_rate
 	if t_us - dyn_lpf_last_us >= 5000:      # (_dyn_lpf_update() does nothing before)
 		_dyn_lpf_update(throttle)
 	if throttle_boost > 0.0:

@@ -106,11 +106,25 @@ var cell_voltage := 4.33
 var thrust_share := 0.0
 var voltage_scale := 1.0     # what BAT_CURRENT_VOLTAGE was set to, against the game's
 
+var _lipo_x := PackedFloat64Array()      # LIPO and LIHV as packed arrays (x, y), made on the first ocv()
+var _lipo_y := PackedFloat64Array()
+var _lihv_x := PackedFloat64Array()
+var _lihv_y := PackedFloat64Array()
+var _ocv_s0 := NAN          # ocv()'s two latest answers: state of charge, LiHV, volts
+var _ocv_l0 := false
+var _ocv_v0 := 0.0
+var _ocv_s1 := NAN
+var _ocv_l1 := false
+var _ocv_v1 := 0.0
+var _k_dt := -1.0           # the smoothing of the polarisation for this dt
+var _k_fast := 0.0
+var _k_slow := 0.0
 var _r0 := 0.02             # ohms per cell, full pack
 var _vf := 0.0
 var _vs := 0.0
 var _vk := 1.0              # smoothed voltage ratio used for the motors
 var _scene: Node = null
+var _gs: Node = null
 var _player: Node = null
 var _vmax := 22.2
 var _driving := false
@@ -236,8 +250,15 @@ func _switch_to(vehicle_id: String) -> void:
 		get_parent().call("pack_changed", "%s: %s" % [pack["name"], describe(pack)])
 
 
+## The game's ZGamestate autoload (looked for again only when it is gone)
+func _game_state() -> Node:
+	if not is_instance_valid(_gs) or not _gs.is_inside_tree():
+		_gs = get_node_or_null("/root/ZGamestate")
+	return _gs
+
+
 func _vehicle_id() -> String:
-	var gs := get_node_or_null("/root/ZGamestate")
+	var gs := _game_state()
 	var v = gs.get("selected_vehicle_id") if gs != null else null
 	return str(v) if v != null else ""
 
@@ -269,15 +290,46 @@ func soc() -> float:
 
 
 func ocv(s: float) -> float:
-	var curve: Array = LIHV if bool(pack["lihv"]) else LIPO
-	if s <= curve[0][0]:
-		return curve[0][1]
-	for i in range(1, curve.size()):
-		if s <= curve[i][0]:
-			var a = curve[i - 1]
-			var b = curve[i]
-			return lerpf(a[1], b[1], (s - a[0]) / (b[0] - a[0]))
-	return curve[-1][1]
+	var lihv: bool = bool(pack["lihv"])
+	# the two latest answers (the pack is asked the same state of charge a few times a tick, and a full pack's)
+	if s == _ocv_s0 and lihv == _ocv_l0:
+		return _ocv_v0
+	if s == _ocv_s1 and lihv == _ocv_l1:
+		return _ocv_v1
+	var v := _ocv_curve(s, lihv)
+	_ocv_s1 = _ocv_s0
+	_ocv_l1 = _ocv_l0
+	_ocv_v1 = _ocv_v0
+	_ocv_s0 = s
+	_ocv_l0 = lihv
+	_ocv_v0 = v
+	return v
+
+
+func _ocv_curve(s: float, lihv: bool) -> float:
+	if _lipo_x.is_empty():
+		for pt in LIPO:
+			_lipo_x.append(pt[0])
+			_lipo_y.append(pt[1])
+		for pt in LIHV:
+			_lihv_x.append(pt[0])
+			_lihv_y.append(pt[1])
+	var xs := _lihv_x if lihv else _lipo_x
+	var ys := _lihv_y if lihv else _lipo_y
+	if s <= xs[0]:
+		return ys[0]
+	# the first point from the second on that s does not pass (binary search: the curve rises)
+	var lo := 1
+	var hi := xs.size()
+	while lo < hi:
+		var mid := (lo + hi) >> 1
+		if s <= xs[mid]:
+			hi = mid
+		else:
+			lo = mid + 1
+	if lo >= xs.size():
+		return ys[ys.size() - 1]
+	return lerpf(ys[lo - 1], ys[lo], (s - xs[lo - 1]) / (xs[lo] - xs[lo - 1]))
 
 
 ## Internal resistance of a cell (ohms) at state of charge s: flat for most of
@@ -293,8 +345,12 @@ func step(amps: float, dt: float) -> void:
 	mah_used += amps * dt / 3.6
 	var s := soc()
 	var r := resistance(s)
-	_vf += (amps * r * POL_FAST - _vf) * (1.0 - exp(-dt / TAU_FAST))
-	_vs += (amps * r * POL_SLOW - _vs) * (1.0 - exp(-dt / TAU_SLOW))
+	if dt != _k_dt:     # (the same dt every tick)
+		_k_dt = dt
+		_k_fast = 1.0 - exp(-dt / TAU_FAST)
+		_k_slow = 1.0 - exp(-dt / TAU_SLOW)
+	_vf += (amps * r * POL_FAST - _vf) * _k_fast
+	_vs += (amps * r * POL_SLOW - _vs) * _k_slow
 	cell_voltage = maxf(ocv(s) - amps * r - _vf - _vs, 0.0)
 
 
@@ -384,7 +440,7 @@ func _physics_process(dt: float) -> void:
 	if _player == null or not is_instance_valid(_player):
 		_player = null
 		return
-	var gs := get_node_or_null("/root/ZGamestate")
+	var gs := _game_state()
 	if gs != null and gs.get("is_paused") == true:
 		return
 	# the quad chosen in the game's menu; a different one gets its own pack
@@ -433,7 +489,7 @@ func _check_respawn(p: Node, armed: bool) -> void:
 	var pos := (p as Node3D).global_position
 	var at_spawn := false
 	var moved := false
-	var gs := get_node_or_null("/root/ZGamestate")
+	var gs := _game_state()
 	var rt = gs.get("respawn_transform") if gs != null else null
 	if rt is Transform3D:
 		at_spawn = pos.distance_to(rt.origin) < 0.05
@@ -470,7 +526,7 @@ func _input(event: InputEvent) -> void:
 
 
 func _typing() -> bool:
-	var gs := get_node_or_null("/root/ZGamestate")
+	var gs := _game_state()
 	if gs != null and gs.get("is_paused") == true:
 		return true
 	var cs := get_tree().current_scene
