@@ -236,28 +236,114 @@ static func fit(rows: Array, kv_rad: float, v_guess: float, iters: int = 10, can
 				V[wkey(r.name, k)] = e[0] / e[1]
 		if den_s > 0.0:
 			V[VBAT_SCALE] = num_s / den_s
-	# R^2 of the equation error over all ok samples and motors
-	var res := PackedFloat64Array()
-	var tot := PackedFloat64Array()
-	for r in rows:
-		var vv := model_v(r, V)
-		var ok: PackedByteArray = r.ok
-		for m in 4:
-			var a: float = P[m][0]
-			var b: float = P[m][1]
-			var c: float = P[m][2]
-			var uu: PackedFloat64Array = r.u[m]
-			var ww: PackedFloat64Array = r.w[m]
-			var yy: PackedFloat64Array = r.dw[m]
-			for i in ok.size():
-				if ok[i] == 0:
-					continue
-				var w := ww[i]
-				var pred := a * (uu[i] * vv[i] - w / kv_rad) - b * w * w - c
-				res.append(yy[i] - pred)
-				tot.append(yy[i])
-	var r2 := 1.0 - Num.variance(res) / Num.variance(tot)
+	var r2 := _r2(rows, P, V, kv_rad)
 	return [P, V, r2]
+
+
+## R^2 of the equation error over all ok samples and motors: 1 - var(residual) / var(dw), in the order
+## row, motor, sample. The residuals and dw are not held as two arrays of 4 x (ok samples): their
+## sums are Num.psum's pairwise sums, taken over blocks that _fill() computes again each time (the
+## same numbers in the same order, so the same result as variance() of the arrays; about 1 GB less
+## at an hour of flight).
+static func _r2(rows: Array, P: Array, V: Dictionary, kv_rad: float) -> float:
+	var ctx := {"rows": rows, "P": P, "kv": kv_rad, "vv": rows.map(func(r): return model_v(r, V)), "ix": [], "off": PackedInt64Array([0])}
+	for r in rows:
+		var ok: PackedByteArray = r.ok
+		var ix := PackedInt32Array()
+		for i in ok.size():
+			if ok[i] != 0:
+				ix.append(i)
+		ctx.ix.append(ix)
+		ctx.off.append(ctx.off[-1] + 4 * ix.size())
+	var n: int = ctx.off[-1]
+	if n == 0:
+		return 1.0 - Num.variance(PackedFloat64Array()) / Num.variance(PackedFloat64Array())
+	var buf := PackedFloat64Array()
+	buf.resize(128)
+	var out := [0.0, 0.0]
+	for kind in 2:
+		var mean_x := _psum_blocks(n, buf, _fill.bind(ctx, kind, false, 0.0)) / n
+		out[kind] = _psum_blocks(n, buf, _fill.bind(ctx, kind, true, mean_x)) / n
+	return 1.0 - out[0] / out[1]
+
+
+## Num.psum over n values that fill(buf, a, count) writes to buf[0..count) for the values a..a+count-1
+## (blocks of at most 128, as psum's leaves)
+static func _psum_blocks(n: int, buf: PackedFloat64Array, fill: Callable, a: int = 0, cnt: int = -1) -> float:
+	if cnt < 0:
+		cnt = n
+	if cnt <= 128:
+		fill.call(buf, a, cnt)
+		return Num.psum(buf, 0, cnt)
+	var n2 := cnt / 2
+	n2 -= n2 % 8
+	return _psum_blocks(n, buf, fill, a, n2) + _psum_blocks(n, buf, fill, a + n2, cnt - n2)
+
+
+## The values a..a+cnt-1 of r2's sequence: kind 0 the residual dw - model, 1 dw; squared deviation from c if sq
+static func _fill(buf: PackedFloat64Array, a: int, cnt: int, ctx: Dictionary, kind: int, sq: bool, c: float) -> void:
+	var off: PackedInt64Array = ctx.off
+	var rows: Array = ctx.rows
+	var P: Array = ctx.P
+	var kv_rad: float = ctx.kv
+	var ri := 0
+	while off[ri + 1] <= a:
+		ri += 1
+	var m := 0
+	var k := 0
+	var ix: PackedInt32Array
+	var vv: PackedFloat64Array
+	var uu: PackedFloat64Array
+	var ww: PackedFloat64Array
+	var yy: PackedFloat64Array
+	var cr := 0
+	var pa := 0.0
+	var pb := 0.0
+	var pc := 0.0
+	var loaded := false
+	for j in cnt:
+		if not loaded:
+			ix = ctx.ix[ri]
+			cr = ix.size()
+			var local := a + j - off[ri]
+			m = local / cr
+			k = local % cr
+			vv = ctx.vv[ri]
+			var r: Dictionary = rows[ri]
+			uu = r.u[m]
+			ww = r.w[m]
+			yy = r.dw[m]
+			pa = P[m][0]
+			pb = P[m][1]
+			pc = P[m][2]
+			loaded = true
+		var i := ix[k]
+		var w := ww[i]
+		var x := yy[i]
+		if kind == 0:
+			x = yy[i] - (pa * (uu[i] * vv[i] - w / kv_rad) - pb * w * w - pc)
+		if sq:
+			var d := x - c
+			x = d * d
+		buf[j] = x
+		k += 1
+		if k == cr:
+			k = 0
+			m += 1
+			if m == 4:
+				ri += 1
+				while ri < rows.size() and ctx.ix[ri].size() == 0:
+					ri += 1
+				m = 0
+				loaded = false
+			else:
+				var r2: Dictionary = rows[ri]
+				uu = r2.u[m]
+				ww = r2.w[m]
+				yy = r2.dw[m]
+				pa = P[m][0]
+				pb = P[m][1]
+				pc = P[m][2]
 
 
 static func scaled(P: Array, lam: float) -> Array:
@@ -395,6 +481,7 @@ static func slice_row(r: Dictionary, a: int, b: int) -> Dictionary:
 
 ## Scales a, b, c together by lambda (golden section over 0.7..3.5, 9 steps) to the smallest free-run
 ## error on lambda_subset (RMS over all ok samples and motors). [lambda, rms at 1, rms at lambda] (Hz).
+## Drops the rows' "dw" (fit() is its last user) to save memory.
 static func refine_dynamics(rows: Array, P: Array, V: Dictionary, kv_rad: float, cancel: Callable = Callable(), max_samples: int = 150000) -> Array:
 	var sub := lambda_subset(rows, max_samples)
 	var vvs: Array = sub.map(func(r): return model_v(r, V))
@@ -442,6 +529,8 @@ static func refine_dynamics(rows: Array, P: Array, V: Dictionary, kv_rad: float,
 	var cl: float = cost.call(lam)
 	if cancel.is_valid() and cancel.call():
 		return []
+	for r in rows:
+		r.erase("dw")      # the derivative of the rotor speed is only for fit(): a quarter of a row's memory
 	return [lam, c1, cl]
 
 

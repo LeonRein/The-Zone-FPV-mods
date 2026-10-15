@@ -131,66 +131,80 @@ func load(p: String, s: Dictionary, k: int) -> void:
 		info.n_frames = 0
 		n = 0
 		return
-	var col := func(key: String) -> PackedFloat64Array:
-		return _f64(s.main[names.find(key)])
-	var t_us: PackedFloat64Array = col.call("time")
-	var nn := t_us.size()
-	var tt := PackedFloat64Array()
+	# Every column is made at the decimated rate straight from the decoder's column (the dk-th value,
+	# then the scaling: the same numbers as scaling all of it and decimating, without the full-length
+	# copies of ~30 columns that were the peak of the whole fit for logs faster than 1.5 kHz)
+	var src_t: Variant = s.main[names.find("time")]
+	var nn: int = src_t.size()
+	var tt := PackedFloat64Array()      # full length: its median step decides the decimation
 	tt.resize(nn)
-	var t0 := t_us[0]
+	var t0 := float(src_t[0])
 	for i in nn:
-		tt[i] = (t_us[i] - t0) * 1e-6
+		tt[i] = (float(src_t[i]) - t0) * 1e-6
 	var pos := PackedFloat64Array()
 	for i in range(1, nn):
 		var d := tt[i] - tt[i - 1]
 		if d > 0.0:
 			pos.append(d)
-	var f := 1.0 / Num.median(pos) if pos.size() > 0 else 1000.0
+	var f := 1.0 / _median_consume(pos) if pos.size() > 0 else 1000.0
 	var hr_s := str(headers.get("blackbox_high_resolution", "0")).strip_edges()
 	var hr := 10.0 if hr_s == "1" or hr_s == "ON" else 1.0
+	fs_raw = f
+	var dec := Num.pyround_int(f / 1000.0)
+	decimation = maxi(dec, 1)
+	fs = fs_raw / decimation
+	var dk := decimation
+	var no := (nn + dk - 1) / dk
+	var col := func(key: String, scale: float = 1.0) -> PackedFloat64Array:
+		var src: Variant = s.main[names.find(key)]
+		var o := PackedFloat64Array()
+		o.resize(no)
+		if scale != 1.0:
+			for j in no:
+				o[j] = float(src[j * dk]) / scale
+		else:
+			for j in no:
+				o[j] = float(src[j * dk])
+		return o
 	var tri := func(prefix: String, scale: float) -> Array:
 		var o: Array = []
 		for i in 3:
 			var key := "%s[%d]" % [prefix, i]
-			if key in names:
-				var c: PackedFloat64Array = col.call(key)
-				if scale != 1.0:
-					for j in nn:
-						c[j] = c[j] / scale
-				o.append(c)
-			else:
-				o.append(Num.zeros(nn))
+			o.append(col.call(key, scale) if key in names else Num.zeros(no))
 		return o
 	var g: Array = tri.call("gyroADC", hr)
-	var gu: Array = tri.call("gyroUnfilt", hr) if flags.unfilt else [g[0].duplicate(), g[1].duplicate(), g[2].duplicate()]
+	var gu: Array = tri.call("gyroUnfilt", hr) if flags.unfilt else [g[0], g[1], g[2]]    # the same arrays: nothing writes them
 	var sp: Array = tri.call("setpoint", hr)
 	var rcc: Array = []
 	if flags.rc:
 		for i in 4:
-			var c: PackedFloat64Array = col.call("rcCommand[%d]" % i)
-			if hr != 1.0:
-				for j in nn:
-					c[j] = c[j] / hr
-			rcc.append(c)
-		if hr != 1.0 and Num.median(rcc[3]) < 500.0:
-			var c3: PackedFloat64Array = rcc[3]
+			rcc.append(col.call("rcCommand[%d]" % i, hr))
+		if hr != 1.0:
+			# the median is of the whole log: from the full-length column, which is not kept
+			var src3: Variant = s.main[names.find("rcCommand[3]")]
+			var full := PackedFloat64Array()
+			full.resize(nn)
 			for j in nn:
-				c3[j] = c3[j] * hr
+				full[j] = float(src3[j]) / hr
+			if _median_consume(full) < 500.0:
+				var c3: PackedFloat64Array = rcc[3]
+				for j in no:
+					c3[j] = c3[j] * hr
 	else:
 		for i in 4:
-			var c := Num.zeros(nn)
+			var c := Num.zeros(no)
 			if i == 3:
 				c.fill(1000.0)
 			rcc.append(c)
 	var thr := PackedFloat64Array()
 	if "setpoint[3]" in names:
 		thr = col.call("setpoint[3]")
-		for j in nn:
+		for j in no:
 			thr[j] = thr[j] / 1000.0
 	else:
-		thr.resize(nn)
+		thr.resize(no)
 		var r3: PackedFloat64Array = rcc[3]
-		for j in nn:
+		for j in no:
 			thr[j] = (r3[j] - 1000.0) / 1000.0
 	var mr: Array = []
 	var mnames: Array[String] = []
@@ -198,7 +212,7 @@ func load(p: String, s: Dictionary, k: int) -> void:
 		if "motor[%d]" % i in names:
 			mnames.append("motor[%d]" % i)
 	for i in 4:
-		mr.append(col.call(mnames[i]) if i < mnames.size() else Num.zeros(nn))
+		mr.append(col.call(mnames[i]) if i < mnames.size() else Num.zeros(no))
 	var hz: Array = []
 	if flags.erpm:
 		var poles := header_int(headers, "motor_poles", 14)
@@ -207,90 +221,58 @@ func load(p: String, s: Dictionary, k: int) -> void:
 		var half := poles / 2.0
 		for i in 4:
 			var c: PackedFloat64Array = col.call("eRPM[%d]" % i)
-			for j in nn:
+			for j in no:
 				c[j] = c[j] * 100.0 / 60.0 / half
 			hz.append(c)
-	var mask := _mode_mask(s, nn)
-	var arm := PackedByteArray()
-	var chp := PackedByteArray()
-	arm.resize(nn)
-	chp.resize(nn)
-	for j in nn:
-		arm[j] = mask[j] & 1
-		chp[j] = (mask[j] >> CHIRP_BOX) & 1
+	var arm_chp := _mode_flags(s, nn, dk)
 	var vb := PackedFloat64Array()
 	if flags.vbat:
-		var v: PackedFloat64Array = col.call("vbatLatest")
+		var vsrc: Variant = s.main[names.find("vbatLatest")]
+		var vfull := PackedFloat64Array()      # the percentile is of the whole log
+		vfull.resize(nn)
 		for j in nn:
-			v[j] = v[j] / 100.0
-		info.vbat_p95 = Num.percentile(v, 95.0)
+			vfull[j] = float(vsrc[j]) / 100.0
+		vfull.sort()
+		info.vbat_p95 = Num.percentile_sorted(vfull, 95.0)
 		if info.vbat_p95 > 1.0:
-			vb = v
+			vb = col.call("vbatLatest", 100.0)
 	var ac: Array = []
 	if flags.acc:
 		var one_g := float(header_int(headers, "acc_1G", 2048))
 		if one_g == 0.0:
 			one_g = 2048.0
 		for i in 3:
-			var c: PackedFloat64Array = col.call("accSmooth[%d]" % i)
-			for j in nn:
-				c[j] = c[j] / one_g
-			ac.append(c)
+			ac.append(col.call("accSmooth[%d]" % i, one_g))
 		info.acc_limit_g = 32767.0 / one_g
 	var pi_: Array = tri.call("axisI", 1.0) if flags.pid else []
-	# decimation
-	fs_raw = f
-	var dec := Num.pyround_int(f / 1000.0)
-	decimation = maxi(dec, 1)
-	fs = fs_raw / decimation
-	var dz := func(a: Variant) -> Variant:
-		return _decimate(a, decimation)
-	t = dz.call(tt)
-	gyro = dz.call(g)
-	gyro_unfilt = dz.call(gu)
-	setpoint = dz.call(sp)
-	rc = dz.call(rcc)
-	throttle = dz.call(thr)
-	motor_raw = dz.call(mr)
-	motor_hz = dz.call(hz)
-	armed = dz.call(arm)
-	chirp = dz.call(chp)
-	vbat = dz.call(vb)
-	acc = dz.call(ac)
-	pid_i = dz.call(pi_)
+	t = PackedFloat64Array()
+	t.resize(no)
+	for j in no:
+		t[j] = tt[j * dk]
+	gyro = g
+	gyro_unfilt = gu
+	setpoint = sp
+	rc = rcc
+	throttle = thr
+	motor_raw = mr
+	motor_hz = hz
+	armed = arm_chp[0]
+	chirp = arm_chp[1]
+	vbat = vb
+	acc = ac
+	pid_i = pi_
 	n = t.size()
 
 
-static func _decimate(a: Variant, k: int) -> Variant:
-	if k <= 1:
-		return a
-	if a is Array:
-		var o: Array = []
-		for c in a:
-			o.append(_decimate(c, k))
-		return o
-	if a is PackedByteArray:
-		var o := PackedByteArray()
-		o.resize((a.size() + k - 1) / k)
-		for i in o.size():
-			o[i] = a[i * k]
-		return o
-	var o2 := PackedFloat64Array()
-	o2.resize((a.size() + k - 1) / k)
-	for i in o2.size():
-		o2[i] = a[i * k]
-	return o2
-
-
-static func _f64(c: Variant) -> PackedFloat64Array:
-	if c is PackedFloat64Array:
-		return (c as PackedFloat64Array).duplicate()
-	var src: PackedInt32Array = c
-	var o := PackedFloat64Array()
-	o.resize(src.size())
-	for i in src.size():
-		o[i] = src[i]
-	return o
+## The median of x, which is sorted in place (Num.median without the copy)
+static func _median_consume(x: PackedFloat64Array) -> float:
+	var n := x.size()
+	if n == 0:
+		return NAN
+	x.sort()
+	if n % 2 == 1:
+		return x[n / 2]
+	return (x[n / 2 - 1] + x[n / 2]) / 2.0
 
 
 static func _count_prefix(names: PackedStringArray, prefix: String) -> int:
@@ -309,8 +291,9 @@ static func _all(names: PackedStringArray, prefix: String, k: int) -> bool:
 
 
 ## flightModeFlags per main frame: slow frames, then the FLIGHTMODE events (more precise), in order;
-## each sets the flags from its frame on, a later one wins.
-static func _mode_mask(s: Dictionary, nn: int) -> PackedInt64Array:
+## each sets the flags from its frame on, a later one wins. [armed, chirp] (0 / 1 bytes) of every
+## dk-th frame.
+static func _mode_flags(s: Dictionary, nn: int, dk: int) -> Array:
 	var at := PackedInt64Array()
 	var val := PackedInt64Array()
 	var sn: PackedStringArray = s.get("slow_names", PackedStringArray())
@@ -327,15 +310,19 @@ static func _mode_mask(s: Dictionary, nn: int) -> PackedInt64Array:
 			val.append(int(ev.flags))
 	var order: Array = range(at.size())
 	order.sort_custom(func(a: int, b: int) -> bool: return at[a] < at[b] or (at[a] == at[b] and a < b))
-	var mask := PackedInt64Array()
-	mask.resize(nn)
-	mask.fill(0)
+	var no := (nn + dk - 1) / dk
+	var arm := PackedByteArray()
+	var chp := PackedByteArray()
+	arm.resize(no)
+	chp.resize(no)
 	var best := -1
 	var k := 0
 	for j in nn:
 		while k < order.size() and at[order[k]] <= j:
 			best = maxi(best, order[k])
 			k += 1
-		if best >= 0:
-			mask[j] = val[best]
-	return mask
+		if j % dk == 0:
+			var m := val[best] if best >= 0 else 0
+			arm[j / dk] = m & 1
+			chp[j / dk] = (m >> CHIRP_BOX) & 1
+	return [arm, chp]
