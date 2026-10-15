@@ -138,6 +138,8 @@ static func fit(rows: Array, kv_rad: float, v_guess: float, iters: int = 10, can
 			s.resize(9)
 			s.fill(0.0)
 			for ri in rows.size():
+				if cancel.is_valid() and cancel.call():
+					return []
 				var r: Dictionary = rows[ri]
 				var ok: PackedByteArray = r.ok
 				var uu: PackedFloat64Array = r.u[m]
@@ -401,6 +403,8 @@ static func refine_dynamics(rows: Array, P: Array, V: Dictionary, kv_rad: float,
 		var nn := 0
 		var Pl := scaled(P, lam)
 		for j in sub.size():
+			if cancel.is_valid() and cancel.call():
+				return INF
 			var r: Dictionary = sub[j]
 			var k := (r.ok as PackedByteArray).count(1)
 			if k > 0:
@@ -434,12 +438,16 @@ static func refine_dynamics(rows: Array, P: Array, V: Dictionary, kv_rad: float,
 			x2 = lo + g * (hi - lo)
 			f2 = cost.call(x2)
 	var lam := (lo + hi) / 2.0
-	return [lam, cost.call(1.0), cost.call(lam)]
+	var c1: float = cost.call(1.0)
+	var cl: float = cost.call(lam)
+	if cancel.is_valid() and cancel.call():
+		return []
+	return [lam, c1, cl]
 
 
 ## |measured / simulated| roll+pitch rotor-speed differential at a few frequencies (1 = right speed):
 ## the bins of scipy.signal.csd / welch (nperseg 1024, Hann, half overlap) nearest to them.
-static func response_gain(rows: Array, sims: Array, freqs: Array = [5, 10, 20, 30]) -> Dictionary:
+static func response_gain(rows: Array, sims: Array, freqs: Array = [5, 10, 20, 30], cancel: Callable = Callable()) -> Dictionary:
 	var nper := 1024
 	var t0: PackedFloat64Array = rows[0].t
 	var dts := PackedFloat64Array()
@@ -484,6 +492,8 @@ static func response_gain(rows: Array, sims: Array, freqs: Array = [5, 10, 20, 3
 			var b := rr[j + 1]
 			if b - a < 2048:
 				continue
+			if cancel.is_valid() and cancel.call():
+				return {}
 			for axis in 2:
 				var nn := b - a
 				xs.resize(nn)

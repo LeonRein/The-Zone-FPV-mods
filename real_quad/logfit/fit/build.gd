@@ -325,6 +325,8 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 	# sensor plausibility
 	var san := {}
 	for L: Flight in used:
+		if cancel_flag:
+			return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
 		var r := Checks.sanity(L, rough_thr[L.name], ncell, pack, erpm_limit)
 		san[L.name] = r.metrics
 		warns.append_array(r.issues)
@@ -366,7 +368,11 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 
 	# 1 segment
 	_say("Finding the usable flight", 0.3)
-	var segs: Array = LL.map(func(x): return Segments.segment_log(x, erpm_limit))
+	var segs: Array = []
+	for x in LL:
+		if cancel_flag:
+			return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
+		segs.append(Segments.segment_log(x, erpm_limit))
 	var uses: Array = []
 	for k in LL.size():
 		uses.append(Segments.mask_from_windows(LL[k].t, segs[k].use))
@@ -421,13 +427,19 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 		return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
 	var lam: float = rd[0]
 	var P := Motor.scaled(P0, lam)
-	var sims: Array = rows.map(func(r): return Motor.simulate(r, P, V, kv_rad))
+	var sims: Array = []
+	for r in rows:
+		if cancel_flag:
+			return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
+		sims.append(Motor.simulate(r, P, V, kv_rad))
 	var frh := {}
 	for k in LL.size():
 		var e: PackedFloat64Array = Motor.free_run_error_hz(rows[k], sims[k])[0]
 		frh[LL[k].name] = Num.mean(e)
 	_say("Motor response", 0.55)
-	var gain := Motor.response_gain(rows, sims)
+	var gain := Motor.response_gain(rows, sims, [5, 10, 20, 30], _cancelled)
+	if cancel_flag:
+		return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
 	rep.motor(P0, P, lam, rd[1], rd[2], r2, V, gain, frh)
 	steps["03_motor"] = {"P0": P0, "V": V, "r2": r2, "lambda": lam, "rms_before": rd[1], "rms_after": rd[2], "P": P, "free_run_hz": frh,
 		"gain": gain, "motor_s": motor_s}

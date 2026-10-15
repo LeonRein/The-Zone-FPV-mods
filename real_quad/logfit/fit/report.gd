@@ -268,13 +268,14 @@ func drag(d: Dictionary, rd_ok: bool, body_src: String, top: Array, top_given: V
 			f(d.rel_sd[1] * 100.0 if d.rel_sd != null else null, 2), f(d.scale, 2), f(d.rel_sd[0] * 100.0 if d.rel_sd != null else null, 2)])
 	else:
 		lines.append("ACC fit not possible (" + ("no ACC in the logs" if int(d.get("n_pass", 0)) == 0 else "too few passes from hover") + ").")
+	var tg := fmt_g(float(top_given), 12) if top_given != null else "None"
 	var rd_txt := "rotor drag %s (%s)" % ["from the ACC fit" if rd_ok else "default 0.40 1/s", f(p.rotor_drag, 3)]
 	var body_txt: String = {"acc": "body drag from the ACC fit",
-		"top_speed": "body drag calibrated to the given top speed %s km/h (the ACC fit does not determine it: too few fast passes)" % fmt_g(float(top_given), 12),
+		"top_speed": "body drag calibrated to the given top speed %s km/h (the ACC fit does not determine it: too few fast passes)" % tg,
 		"default": "body drag class default (reference × (D/5.1\")²)"}[body_src]
 	lines.append("Used: %s; %s: cd_area %s m²." % [rd_txt, body_txt, f(p.cd_area, 3)])
 	lines.append("Top speed of the model (full throttle, level, fresh pack with sag): **%d km/h** at %d° tilt, %d Hz rotor" % [roundi(top[0]), roundi(top[1]), roundi(top[2])]
-		+ ("; given %s km/h" % fmt_g(float(top_given), 12) if top_given != null else "; no top speed in the form")
+		+ ("; given %s km/h" % tg if top_given != null else "; no top speed in the form")
 		+ ("; with the default body drag it would be %d km/h." % roundi(top_default) if top_default != null else "."))
 	if rd_ok:
 		meas("Rotor drag (linear)", "%s 1/s" % f(d.rotor_drag_per_s, 2), "ACC dead reckoning")
@@ -283,13 +284,13 @@ func drag(d: Dictionary, rd_ok: bool, body_src: String, top: Array, top_given: V
 	if body_src == "acc":
 		meas("Body drag", "cd_area " + f(p.cd_area, 3), "ACC dead reckoning")
 	elif body_src == "top_speed":
-		meas("Body drag", "cd_area " + f(p.cd_area, 3), "given top speed %s km/h" % fmt_g(float(top_given), 12))
+		meas("Body drag", "cd_area " + f(p.cd_area, 3), "given top speed %s km/h" % tg)
 	else:
 		default("Body drag", "cd_area " + f(p.cd_area, 3), "reference × (D/5.1\")²")
 	var rs: Variant = d.get("rel_sd")
 	gate("drag_rotor", "ACC rotor drag", rd_ok, "R² %s, uncertainty %s (thresholds 0.5 / 0.15)" % [f(d.get("r2"), 2), f(rs[1] if rs != null else null, 2)])
 	gate("top_speed", "Top speed backed", body_src == "acc" or body_src == "top_speed",
-		{"acc": "body drag from ACC", "top_speed": "calibrated to the given %s km/h" % fmt_g(float(top_given), 12),
+		{"acc": "body drag from ACC", "top_speed": "calibrated to the given %s km/h" % tg,
 		"default": "neither a given top speed nor an ACC fit: %d km/h is an estimate" % roundi(top[0])}[body_src])
 	sec("Drag and top speed", lines)
 
