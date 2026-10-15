@@ -52,7 +52,7 @@ WHAT CHANGES
       and 120-170 A at full throttle, freestyle35 about 3.5 A and 55 A. It
       drains the pack over the flight, and the pack's resistance is the sag
       worked out from the logs (freestyle5 3.4, freestyle35 11.5 mOhm a
-      cell). A fresh pack flies exactly as the real one did (freestyle5's
+      cell). A fresh pack flies as the real one did (freestyle5's
       freshest log was 4.22 V a cell; freestyle35's was 3.99, so its fresh
       pack is a few percent weaker than a real full one). As it drains the
       quad needs more throttle and punches weaker. Fresh packs on respawn
@@ -85,10 +85,10 @@ WHAT CHANGES
     - the quad turns, stops, yaws, punches and falls as the real one does:
       the 5" reaches 90% of a full roll rate in about 40 ms
     - with dirty_air a hover is calm, a punch shows a couple of degrees a
-      second of shake, and a drop and catch about fourteen (what the real
-      quad's log showed)
-    - the hover throttle on a fresh pack is about 26% (freestyle35: 32%),
-      as on the real quads
+      second of shake, and a drop and catch about fourteen (calibrated on
+      the real quad's logs)
+    - the hover throttle on a fresh pack is about 26% (the real quad's
+      logs: about 25%; freestyle35 32%, its logs about 30%)
 
   The CPU: about a quarter of a millisecond a physics tick for the loop at
   4000 Hz (roughly an eighth of a core), about 0.4 ms at 8000 Hz.
@@ -126,14 +126,18 @@ WITH THE OTHER MODS
   exactly as with those mods. real_quad/status.txt says at each launch what
   is used how, and what stands aside and why.
 
-  These work with real_quad, and the model uses what they give:
+  real_quad has its own flight controller, the Betaflight port; it does not
+  use flight_controller's. The two share the drones:
     - flight_controller: if it is in effect, real_quad flies the drones it
-      has a model for, and flight_controller flies all the others. Where a
-      model flies, flight_controller's own controller is not run.
+      has a model for, with its own controller, and flight_controller flies
+      all the others. Where a model flies, flight_controller's controller is
+      not run and none of its settings (PIDs, motor times...) apply.
       zonemods loads mods in name order, so flight_controller comes first.
       If you list the mods in override.cfg with real_quad first,
       flight_controller stays out altogether and says so in its
       status.txt: real_quad then flies its drones and the game the rest
+
+  These work with real_quad, and the model uses what they give:
     - dirty_air: the prop wash, and the floor and ceiling. real_quad calls
       its set_model() each tick (the model's thrust, props, frame, wash,
       wake and gust); dirty_air then works out the air at each prop of that
@@ -159,8 +163,9 @@ WITH THE OTHER MODS
       so
     - fpv_osd, mod_settings, drones and pilot_audio work as before: fpv_osd
       shows the pack (through real_quad without battery_sag), mod_settings
-      has real_quad's settings, the ids of the drones pick the models, and
-      pilot_audio's motor voices follow the model's four rotor speeds
+      has real_quad's settings, and pilot_audio places the quad's sound.
+      real_quad also puts the model's four rotor speeds on the quad
+      (metadata "motor_rpm", rpm) for a sound mod that can use them
     - race times are never posted while real_quad is in effect, as the
       physics are not the game's
 
@@ -193,7 +198,9 @@ HOW IT WORKS
   resource pack (real_quad/remap.pck) that points the game at real_quad's
   player.gd instead: the game's own script with its physics, sound and body
   steps handed to hook.gd. With flight_controller in effect, player_fc.gd
-  is used, which extends flight_controller's fc.gd the same way. Nothing of
+  is used, which extends flight_controller's fc.gd the same way - only so
+  that flight_controller still flies the drones without a model; where a
+  model flies, its controller is skipped. Nothing of
   the game's is shipped or changed on disk.
 
   The models were made and tried with one version of the game (the player
@@ -246,8 +253,9 @@ THE GAME'S OWN SETTINGS
 
 MULTIPLAYER AND RACES
   Only the quad you fly is changed, on your computer; others see it fly
-  (its position and attitude, and the sound of its motors). Race times are
-  not submitted.
+  (its position and attitude). The game sends no motor speeds, so what
+  others hear of it is their own game's (or pilot_audio's) idea of it.
+  Race times are not submitted.
 
 
 INSTALL
