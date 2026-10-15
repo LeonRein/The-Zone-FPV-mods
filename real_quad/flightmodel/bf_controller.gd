@@ -56,6 +56,14 @@ var setpoint_rate := PackedFloat64Array([0, 0, 0])
 var rc_deflection := PackedFloat64Array([0, 0, 0])
 var rc_deflection_abs := PackedFloat64Array([0, 0, 0])
 var max_rc_rate := PackedFloat64Array([0, 0, 0])
+# cfg's rates as numbers (update_rates()), and the deadbands and rate limits of the axes
+var _rates_type: int = 0
+var _rc_rates := PackedFloat64Array([0, 0, 0])
+var _rates := PackedFloat64Array([0, 0, 0])
+var _rc_expo := PackedFloat64Array([0, 0, 0])
+var _deadband := PackedFloat64Array([0, 0, 0])
+var _rate_limit := PackedFloat64Array([0, 0, 0])
+var _mincheck: float = 1050.0
 var throttle_lut := PackedFloat64Array()
 var rx_data_new := false
 var last_rx_time_us: int = 0
@@ -149,6 +157,7 @@ var dmax_lpf_s1 := PackedFloat64Array([0, 0, 0])
 var dmax_lpf_s := PackedFloat64Array([0, 0, 0])
 # dterm lowpass 1 (type, k, 3 states per axis) and 2
 var dl1_type: int
+var _dl1_raw_type: int      # cfg's dterm_lpf1_type
 var dl1_k: float = 1.0
 var dl1_on := false
 var dl1_s := PackedFloat64Array([0, 0, 0, 0, 0, 0, 0, 0, 0])   # 3 axes x 3 stages
@@ -300,6 +309,10 @@ func _init(p_cfg: Dictionary, p_use_rpm_filter: bool = true) -> void:
 	gyro_dt = float(cfg.looptime_us) * 1e-6
 	dt = gyro_dt * float(cfg.pid_process_denom)
 	pid_freq = 1.0 / dt
+	for a in 3:
+		_deadband[a] = float(cfg.yaw_deadband) if a == 2 else float(cfg.deadband)
+		_rate_limit[a] = float(cfg.rate_limits[a])
+	_mincheck = float(cfg.mincheck)
 	update_rates()
 	_build_throttle_lut()
 	auto_sp = 1.5 / (1.0 + float(cfg.rc_smoothing_auto_factor) / 10.0)
@@ -345,6 +358,7 @@ func _init(p_cfg: Dictionary, p_use_rpm_filter: bool = true) -> void:
 	dyn_lpf_min = float(cfg.dterm_lpf1_dyn_hz[0])
 	dyn_lpf_max = float(cfg.dterm_lpf1_dyn_hz[1])
 	dyn_lpf_expo = float(cfg.dterm_lpf1_dyn_expo)
+	_dl1_raw_type = int(cfg.dterm_lpf1_type)
 	var l1hz := dyn_lpf_min if dyn_lpf_min > 0.0 else float(cfg.dterm_lpf1_static_hz)
 	var s1 := _lp_setup(int(cfg.dterm_lpf1_type), l1hz, dt)
 	dl1_on = s1[0]; dl1_type = s1[1]; dl1_k = s1[2]
@@ -410,31 +424,36 @@ func _init(p_cfg: Dictionary, p_use_rpm_filter: bool = true) -> void:
 # ------------------------------------------------------------------ rc.c
 ## The rates of cfg (rates_type, rc_rates, rates, rc_expo) changed: the stick's full rate is worked out again
 func update_rates() -> void:
+	_rates_type = int(cfg.rates_type)
+	for a in 3:
+		_rc_rates[a] = float(cfg.rc_rates[a])
+		_rates[a] = float(cfg.rates[a])
+		_rc_expo[a] = float(cfg.rc_expo[a])
 	for a in 3:
 		max_rc_rate[a] = apply_rates(a, 1.0, 1.0)
 
 
 func apply_rates(axis: int, rc: float, rc_abs: float) -> float:
-	if int(cfg.rates_type) == 1:   # KISS (as the game's: rc_rates/100 = rate, rates/100 = rate factor, rc_expo/100 = curve)
-		var ke := float(cfg.rc_expo[axis]) / 100.0
-		var kc := (pow(rc, 3) * ke + rc * (1.0 - ke)) * (float(cfg.rc_rates[axis]) / 100.0)
-		return 200.0 * kc / clampf(1.0 - rc_abs * float(cfg.rates[axis]) / 100.0, 0.01, 1.0)
-	if int(cfg.rates_type) == 3:   # ACTUAL
-		var expof := float(cfg.rc_expo[axis]) / 100.0
+	if _rates_type == 1:   # KISS (as the game's: rc_rates/100 = rate, rates/100 = rate factor, rc_expo/100 = curve)
+		var ke := _rc_expo[axis] / 100.0
+		var kc := (pow(rc, 3) * ke + rc * (1.0 - ke)) * (_rc_rates[axis] / 100.0)
+		return 200.0 * kc / clampf(1.0 - rc_abs * _rates[axis] / 100.0, 0.01, 1.0)
+	if _rates_type == 3:   # ACTUAL
+		var expof := _rc_expo[axis] / 100.0
 		expof = rc_abs * (pow(rc, 5) * expof + rc * (1.0 - expof))
-		var center := float(cfg.rc_rates[axis]) * 10.0
-		var stick_mov := maxf(0.0, float(cfg.rates[axis]) * 10.0 - center)
+		var center := _rc_rates[axis] * 10.0
+		var stick_mov := maxf(0.0, _rates[axis] * 10.0 - center)
 		return rc * center + stick_mov * expof
 	# BETAFLIGHT rates
-	if int(cfg.rc_expo[axis]) != 0:
-		var e := float(cfg.rc_expo[axis]) / 100.0
+	if int(_rc_expo[axis]) != 0:
+		var e := _rc_expo[axis] / 100.0
 		rc = rc * pow(rc_abs, 3) * e + rc * (1.0 - e)
-	var rr := float(cfg.rc_rates[axis]) / 100.0
+	var rr := _rc_rates[axis] / 100.0
 	if rr > 2.0:
 		rr += 14.54 * (rr - 2.0)
 	var ang := 200.0 * rr * rc
-	if int(cfg.rates[axis]) != 0:
-		ang *= 1.0 / clampf(1.0 - rc_abs * float(cfg.rates[axis]) / 100.0, 0.01, 1.0)
+	if int(_rates[axis]) != 0:
+		ang *= 1.0 / clampf(1.0 - rc_abs * _rates[axis] / 100.0, 0.01, 1.0)
 	return ang
 
 
@@ -499,7 +518,7 @@ func rx_frame(rc_data: PackedFloat64Array, frame_t_us: int) -> void:
 		if a == 2:
 			v = -v
 		rc_command[a] = v
-	var mc := float(cfg.mincheck)
+	var mc := _mincheck
 	var tmp := clampf(rc_data[3], mc, 2000.0)
 	rc_command[3] = _throttle_lookup(int((tmp - mc) * 1000.0 / (2000.0 - mc)))
 	var pct := clampf((rc_data[3] - mc) * 100.0 / (2000.0 - mc), 0.0, 100.0)
@@ -623,12 +642,11 @@ func process_rc_command() -> void:
 			_update_ff_filters()
 			_update_smoothing_cutoffs()
 		for a in 3:
-			var db: float = float(cfg.yaw_deadband) if a == 2 else float(cfg.deadband)
-			var rcf := rc_command[a] / (500.0 - db)
+			var rcf := rc_command[a] / (500.0 - _deadband[a])
 			rc_deflection[a] = rcf
 			var rabs := absf(rcf)
 			rc_deflection_abs[a] = rabs
-			var lim := float(cfg.rate_limits[a])
+			var lim := _rate_limit[a]
 			raw_setpoint[a] = clampf(apply_rates(a, rcf, rabs), -lim, lim)
 			_calc_feedforward(a)
 		for i in 4:
@@ -847,7 +865,7 @@ func _dyn_lpf_update(throttle: float) -> void:
 	var curve := thr * (1.0 - thr) * expof + thr
 	var cutoff := (dyn_lpf_max - dyn_lpf_min) * curve + dyn_lpf_min
 	if dyn_lpf_min > 0.0:
-		var ft := int(cfg.dterm_lpf1_type)
+		var ft := _dl1_raw_type
 		if ft == 0:
 			dl1_k = pt1_gain(cutoff, dt)
 		elif ft == 1 or ft == 2:
