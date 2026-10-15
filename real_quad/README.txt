@@ -114,13 +114,40 @@ MODELS
   Any number of models can be there, for any drone; a folder dropped in is
   found at the next start (or with Rescan models on the Mods page). Models you
   make yourself are kept apart from the game folder, where updates leave
-  them alone: in the game's user folder, real_quad/models (the Mods page's
-  Build a model button names it). A model there with the id of one that
+  them alone: in the game's user folder, real_quad/models (the Models...
+  button on the Mods page opens the model manager, below). A model there with the id of one that
   came with real_quad takes its place, and status.txt says so. A model
   made by a newer real_quad (craft.json package_format above 2) is skipped,
   and status.txt says so too. settings.cfg says which flies which drone. The
   loop rate comes from fc.json: 4000 Hz for freestyle5; a model with an
   8000 Hz loop works the same way.
+
+
+MODELS... (THE MODEL MANAGER)
+  Pause > Mods > real_quad > Models... lists every model: its grade (A to D,
+  how closely it flies like the real quad), whether it came with real_quad or
+  is yours, the drones that fly it and the disk it uses. Open one for its
+  report (what was measured, what is a class default, what to fly next), its
+  logs, and its parameters; there you can fly it on a drone, duplicate it,
+  open its folder and, if it is yours, delete it (after asking).
+  New model from logs: pick the Betaflight blackbox logs of your quad
+  (Betaflight 2025.12 or newer, bidirectional DShot, accelerometer and
+  unfiltered gyro logged; chirp sweeps are best), check what was read from
+  them, enter weight, cells, KV and the props, and build. The weight, props
+  and pack cannot be seen in the logs: the box "All logs were flown with the
+  same weight, props and battery" is ticked for you; untick it if they were
+  not, and leave those logs out.
+  The build is a background job of the mod, not of the window: close the
+  window and the build goes on, the Mods page says "Building <name>: <step>
+  45 %", a short notice appears when it is done. One build at a time.
+  The logs are copied into the model's folder (logs/), identical files once,
+  and inputs.json records the form and the logs (name, size, SHA-256): a
+  model can be rebuilt without the originals. In a model's page, add or
+  remove logs and change the parameters (name, weight, cells, KV, props,
+  battery, top speed, the Zone drone...), then Rebuild; the old model flies
+  until the new one is ready. A model from before the manager shows "inputs
+  unknown": add logs to rebuild it. The top speed is not measurable from
+  most logs: enter it in Parameters to set the body drag.
 
 
 WITH THE OTHER MODS
@@ -228,9 +255,6 @@ SETTINGS
     - battery_capacity_mah: the pack size for a model whose package does not
       give it
     - unknown_game_version: see HOW IT WORKS
-    - model_builder: shows the Build a model from logs button on the Mods page
-      (the window that makes a model from Betaflight blackbox logs; not
-      finished, off by default)
     - a section for each of the game's quads:
         model: "auto" (the model made for it, if any), "off" (the game's
           physics), or a model's name - any model on any drone

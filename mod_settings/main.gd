@@ -187,7 +187,17 @@ func _input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 
 
+var _status_t := 0.0
+
+
 func _process(_delta: float) -> void:
+	# a mod's line under its name can change by itself (a running build): read it twice a second
+	_status_t += _delta
+	if _status_t >= 0.5:
+		_status_t = 0.0
+		for p in [_overlay, _page_panel]:
+			if p != null and is_instance_valid(p) and p.is_inside_tree() and p.is_visible_in_tree() and p.has_method("refresh_status"):
+				p.refresh_status()
 	# the pause menu has its own page: the overlay goes while paused
 	if _layer != null and _layer.visible:
 		var gs := get_node_or_null("/root/ZGamestate")

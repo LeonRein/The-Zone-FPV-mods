@@ -169,6 +169,14 @@ func update_state() -> void:
 		_status.text = host.mod_status(_sel)
 
 
+## Just the mod's line under its name (a mod's line can change by itself, e.g. real_quad's running build)
+func refresh_status() -> void:
+	if _status != null and is_instance_valid(_status) and _sel != "":
+		var t: String = host.mod_status(_sel)
+		if _status.text != t:
+			_status.text = t
+
+
 func update_notice() -> void:
 	update_state()
 

@@ -183,13 +183,19 @@ var rpm_max_hz: float
 var rpm_fade: float
 var rpm_q: float
 var rpm_weights := PackedFloat64Array()
-# rpm notches: index n = motor*harm + h ; coefficients and 3-axis states
-var rn_a1 := PackedFloat64Array()
-var rn_a2 := PackedFloat64Array()
-var rn_f := PackedFloat64Array()
-var rn_wq := PackedFloat64Array()
-var rn_ic1 := PackedFloat64Array()   # n*3 + axis
-var rn_ic2 := PackedFloat64Array()
+# rpm notches: the active ones (harmonic weight > 0) in the order they run, harmonic outer and motor inner
+# (n = motor*harm + h in the firmware); the coefficients are worked out in the loop, the states are
+# the biquad's two integrators per axis (roll, pitch, yaw), one array each, indexed by the notch
+var rn_count: int = 0
+var rn_motor := PackedInt32Array()
+var rn_mult := PackedFloat64Array()   # the harmonic's number h + 1
+var rn_weight := PackedFloat64Array()
+var rn_ic1_r := PackedFloat64Array()
+var rn_ic1_p := PackedFloat64Array()
+var rn_ic1_y := PackedFloat64Array()
+var rn_ic2_r := PackedFloat64Array()
+var rn_ic2_p := PackedFloat64Array()
+var rn_ic2_y := PackedFloat64Array()
 var motor_freq_k: float
 var motor_hz := PackedFloat64Array([0, 0, 0, 0])
 
@@ -250,19 +256,27 @@ static func _lp_setup(ftype: int, hz: float, p_dt: float) -> Array:
 	return [true, 3, pt3_gain(hz, p_dt)]
 
 
-## Apply a 1-3 stage PT filter on the states s[base..base+2]; s[base] is always the output.
-static func _lp_apply(s: PackedFloat64Array, base: int, stages: int, k: float, x: float) -> float:
-	if stages == 1:
-		s[base] += k * (x - s[base])
-		return s[base]
-	if stages == 2:
-		s[base + 1] += k * (x - s[base + 1])
-		s[base] += k * (s[base + 1] - s[base])
-		return s[base]
-	s[base + 1] += k * (x - s[base + 1])
-	s[base + 2] += k * (s[base + 1] - s[base + 2])
-	s[base] += k * (s[base + 2] - s[base])
-	return s[base]
+## Apply a 1-3 stage PT filter to the three axes, in place: x[a] is filtered by the states s[a*3 .. a*3+2];
+## s[a*3] is always the output.
+static func _lp3(s: PackedFloat64Array, stages: int, k: float, x: PackedFloat64Array) -> void:
+	for a in 3:
+		var b := a * 3
+		var s0 := s[b]
+		if stages == 1:
+			s0 += k * (x[a] - s0)
+		else:
+			var s1 := s[b + 1]
+			s1 += k * (x[a] - s1)
+			if stages == 2:
+				s0 += k * (s1 - s0)
+			else:
+				var s2 := s[b + 2]
+				s2 += k * (s1 - s2)
+				s0 += k * (s2 - s0)
+				s[b + 2] = s2
+			s[b + 1] = s1
+		s[b] = s0
+		x[a] = s0
 
 
 func _init(p_cfg: Dictionary, p_use_rpm_filter: bool = true) -> void:
@@ -341,13 +355,18 @@ func _init(p_cfg: Dictionary, p_use_rpm_filter: bool = true) -> void:
 	rpm_q = float(cfg.rpm_filter_q) / 100.0
 	for w in cfg.rpm_filter_weights:
 		rpm_weights.append(clampf(float(w) / 100.0, 0.0, 1.0))
-	var nn := 4 * rpm_harm
-	rn_a1.resize(nn); rn_a2.resize(nn); rn_f.resize(nn); rn_wq.resize(nn)
-	rn_ic1.resize(nn * 3); rn_ic2.resize(nn * 3)
-	rn_ic1.fill(0.0); rn_ic2.fill(0.0)
-	for m in 4:
-		for h in rpm_harm:
-			_rpm_notch_update(m * rpm_harm + h, rpm_min_hz * float(h + 1), 0.0)
+	rpm_qi = 1.0 / rpm_q
+	for h in rpm_harm:          # (the order of the firmware's loop)
+		if rpm_weights[h] <= 0.0:
+			continue            # (a notch of weight 0 changes nothing)
+		for m in 4:
+			rn_motor.append(m)
+			rn_mult.append(float(h + 1))
+			rn_weight.append(rpm_weights[h])
+	rn_count = rn_motor.size()
+	for arr in [rn_ic1_r, rn_ic1_p, rn_ic1_y, rn_ic2_r, rn_ic2_p, rn_ic2_y]:
+		arr.resize(rn_count)
+		arr.fill(0.0)
 	motor_freq_k = pt1_gain(float(cfg.rpm_filter_lpf_hz), dt)
 	# mixer
 	var lim := float(cfg.motor_output_limit) / 100.0 if int(cfg.motor_output_limit) < 100 else 1.0
@@ -601,82 +620,131 @@ func process_rc_command() -> void:
 			_calc_feedforward(a)
 		for i in 4:
 			rx_to_smooth[i] = rc_command[3] if i == 3 else raw_setpoint[i]
-	# PT3 smoothing of setpoints and throttle
-	for i in 4:
-		var k := sp_k[i]
-		sp_s1[i] += k * (rx_to_smooth[i] - sp_s1[i])
-		sp_s2[i] += k * (sp_s1[i] - sp_s2[i])
-		sp_s[i] += k * (sp_s2[i] - sp_s[i])
-	for i in 3:
-		setpoint_rate[i] = sp_s[i]
-	rc_throttle_smoothed = sp_s[3]
+	# PT3 smoothing of the setpoints, their feedforward and the throttle
 	for a in 3:
-		ffs_s1[a] += ffs_k * (ff_raw[a] - ffs_s1[a])
-		ffs_s2[a] += ffs_k * (ffs_s1[a] - ffs_s2[a])
-		ffs_s[a] += ffs_k * (ffs_s2[a] - ffs_s[a])
-		ff_smoothed[a] = ffs_s[a]
+		var k := sp_k[a]
+		var s1 := sp_s1[a]
+		var s2 := sp_s2[a]
+		var s3 := sp_s[a]
+		var x := rx_to_smooth[a]
+		s1 += k * (x - s1)
+		s2 += k * (s1 - s2)
+		s3 += k * (s2 - s3)
+		sp_s1[a] = s1
+		sp_s2[a] = s2
+		sp_s[a] = s3
+		setpoint_rate[a] = s3
+		s1 = ffs_s1[a]
+		s2 = ffs_s2[a]
+		s3 = ffs_s[a]
+		x = ff_raw[a]
+		s1 += ffs_k * (x - s1)
+		s2 += ffs_k * (s1 - s2)
+		s3 += ffs_k * (s2 - s3)
+		ffs_s1[a] = s1
+		ffs_s2[a] = s2
+		ffs_s[a] = s3
+		ff_smoothed[a] = s3
+	var kt := sp_k[3]
+	var t1 := sp_s1[3]
+	var t2 := sp_s2[3]
+	var t3 := sp_s[3]
+	t1 += kt * (rx_to_smooth[3] - t1)
+	t2 += kt * (t1 - t2)
+	t3 += kt * (t2 - t3)
+	sp_s1[3] = t1
+	sp_s2[3] = t2
+	sp_s[3] = t3
+	rc_throttle_smoothed = t3
 	rx_data_new = false
 
 
 # ------------------------------------------------------------------ gyro
 var _g := PackedFloat64Array([0, 0, 0])     # gyro_update's scratch
 var rpm_qi: float = 0.0
-func _rpm_notch_update(n: int, freq: float, weight: float) -> void:
-	var x := PI * freq * dt
-	var f := tan(x)
-	var qi := 1.0 / rpm_q
-	var a1 := 1.0 / (1.0 + f * (f + qi))
-	rn_f[n] = f
-	rn_a1[n] = a1
-	rn_a2[n] = f * a1
-	rn_wq[n] = qi * weight
-
-
 func gyro_update(rates_dps: PackedFloat64Array, telemetry_hz: PackedFloat64Array) -> void:
 	var g := _g
-	rpm_qi = 1.0 / rpm_q
-	for a in 3:
-		if gl2_on:
-			_lp_apply(gl2_s, a * 3, gl2_type, gl2_k, rates_dps[a])
-			g[a] = _lp_apply(gl2_s, a * 3, gl2_type, gl2_k, rates_dps[a])
-		else:
-			g[a] = rates_dps[a]
+	# gyro lowpass 2, run twice on the same sample (two gyro samples per PID loop at the 8 kHz gyro rate)
+	if gl2_on:
+		var k := gl2_k
+		var s := gl2_s
+		for a in 3:
+			var x := rates_dps[a]
+			var b := a * 3
+			var s0 := s[b]
+			if gl2_type == 1:
+				s0 += k * (x - s0)
+				s0 += k * (x - s0)
+			else:
+				var s1 := s[b + 1]
+				if gl2_type == 2:
+					s1 += k * (x - s1)
+					s0 += k * (s1 - s0)
+					s1 += k * (x - s1)
+					s0 += k * (s1 - s0)
+				else:
+					var s2 := s[b + 2]
+					s1 += k * (x - s1)
+					s2 += k * (s1 - s2)
+					s0 += k * (s2 - s0)
+					s1 += k * (x - s1)
+					s2 += k * (s1 - s2)
+					s0 += k * (s2 - s0)
+					s[b + 2] = s2
+				s[b + 1] = s1
+			s[b] = s0
+			g[a] = s0
+	else:
+		g[0] = rates_dps[0]
+		g[1] = rates_dps[1]
+		g[2] = rates_dps[2]
 	for m in 4:
 		motor_hz[m] += motor_freq_k * (telemetry_hz[m] - motor_hz[m])
 	if use_rpm_filter:
-		for m in 4:
-			for h in rpm_harm:
-				var wt := rpm_weights[h]
-				if wt <= 0.0:
-					continue
-				var f := clampf(float(h + 1) * motor_hz[m], rpm_min_hz, rpm_max_hz)
-				var margin := f - rpm_min_hz
-				var w := margin / rpm_fade if margin < rpm_fade else 1.0
-				# _rpm_notch_update(), inlined (the hottest loop of the controller)
-				var n := m * rpm_harm + h
-				var tf := tan(PI * f * dt)
-				var a1 := 1.0 / (1.0 + tf * (tf + rpm_qi))
-				rn_f[n] = tf
-				rn_a1[n] = a1
-				rn_a2[n] = tf * a1
-				rn_wq[n] = rpm_qi * w * wt
-		for h in rpm_harm:
-			for m in 4:
-				var n := m * rpm_harm + h
-				var a1 := rn_a1[n]
-				var a2 := rn_a2[n]
-				var f := rn_f[n]
-				var wq := rn_wq[n]
-				for i in 3:
-					var j := n * 3 + i
-					var v3 := g[i] - rn_ic2[j]
-					var v1 := a1 * rn_ic1[j] + a2 * v3
-					var v2 := rn_ic2[j] + f * v1
-					rn_ic1[j] = 2.0 * v1 - rn_ic1[j]
-					rn_ic2[j] = 2.0 * v2 - rn_ic2[j]
-					g[i] -= wq * v1
-	for a in 3:
-		gyro_filtered[a] = _lp_apply(gl1_s, a * 3, gl1_type, gl1_k, g[a]) if gl1_on else g[a]
+		var g0 := g[0]
+		var g1 := g[1]
+		var g2 := g[2]
+		for n in rn_count:
+			# the notch of this motor and harmonic at its frequency (faded in above the minimum)
+			var f := clampf(rn_mult[n] * motor_hz[rn_motor[n]], rpm_min_hz, rpm_max_hz)
+			var margin := f - rpm_min_hz
+			var w := margin / rpm_fade if margin < rpm_fade else 1.0
+			var tf := tan(PI * f * dt)
+			var a1 := 1.0 / (1.0 + tf * (tf + rpm_qi))
+			var a2 := tf * a1
+			var wq := rpm_qi * w * rn_weight[n]
+			var c1 := rn_ic1_r[n]
+			var c2 := rn_ic2_r[n]
+			var v3 := g0 - c2
+			var v1 := a1 * c1 + a2 * v3
+			var v2 := c2 + tf * v1
+			rn_ic1_r[n] = 2.0 * v1 - c1
+			rn_ic2_r[n] = 2.0 * v2 - c2
+			g0 -= wq * v1
+			c1 = rn_ic1_p[n]
+			c2 = rn_ic2_p[n]
+			v3 = g1 - c2
+			v1 = a1 * c1 + a2 * v3
+			v2 = c2 + tf * v1
+			rn_ic1_p[n] = 2.0 * v1 - c1
+			rn_ic2_p[n] = 2.0 * v2 - c2
+			g1 -= wq * v1
+			c1 = rn_ic1_y[n]
+			c2 = rn_ic2_y[n]
+			v3 = g2 - c2
+			v1 = a1 * c1 + a2 * v3
+			v2 = c2 + tf * v1
+			rn_ic1_y[n] = 2.0 * v1 - c1
+			rn_ic2_y[n] = 2.0 * v2 - c2
+			g2 -= wq * v1
+		g[0] = g0
+		g[1] = g1
+		g[2] = g2
+	gyro_filtered[0] = g[0]
+	gyro_filtered[1] = g[1]
+	gyro_filtered[2] = g[2]
+	if gl1_on:
+		_lp3(gl1_s, gl1_type, gl1_k, gyro_filtered)
 
 
 # ------------------------------------------------------------------ pid.c
@@ -692,17 +760,18 @@ func _tpa_classic(arg: float) -> float:
 	return 1.0 - rate
 
 
+var _gdt := PackedFloat64Array([0, 0, 0])   # pid_controller's scratch: the gyro for the D term
 func pid_controller() -> void:
 	ag_throttle_d *= ag_gain
 	iterm_accel = ag_throttle_d * ANTIGRAVITY_KI
-	var gdt := PackedFloat64Array([0, 0, 0])
-	for a in 3:
-		var v := gyro_filtered[a]
-		if dl1_on:
-			v = _lp_apply(dl1_s, a * 3, dl1_type, dl1_k, v)
-		if dl2_on:
-			v = _lp_apply(dl2_s, a * 3, dl2_type, dl2_k, v)
-		gdt[a] = v
+	var gdt := _gdt
+	gdt[0] = gyro_filtered[0]
+	gdt[1] = gyro_filtered[1]
+	gdt[2] = gyro_filtered[2]
+	if dl1_on:
+		_lp3(dl1_s, dl1_type, dl1_k, gdt)
+	if dl2_on:
+		_lp3(dl2_s, dl2_type, dl2_k, gdt)
 	for a in 3:
 		var sp := setpoint_rate[a]
 		var gyro := gyro_filtered[a]
@@ -793,6 +862,7 @@ func _dyn_lpf_update(throttle: float) -> void:
 
 
 # ------------------------------------------------------------------ mixer.c
+var _mix := PackedFloat64Array([0, 0, 0, 0])   # mix_table's scratch
 func mix_table() -> void:
 	var throttle := (rc_throttle_smoothed - 1000.0) / 1000.0
 	var inc := 0.0
@@ -827,7 +897,8 @@ func mix_table() -> void:
 	ag_s += ag_k * (ag_s1 - ag_s)
 	ag_throttle_d = ag_s
 	tpa_factor = _tpa_classic(clampf(throttle, 0.0, 1.0))
-	_dyn_lpf_update(throttle)
+	if t_us - dyn_lpf_last_us >= 5000:      # (_dyn_lpf_update() does nothing before)
+		_dyn_lpf_update(throttle)
 	if throttle_boost > 0.0:
 		throttle_lpf_s += throttle_lpf_k * (throttle - throttle_lpf_s)
 		throttle = clampf(throttle + throttle_boost * (throttle - throttle_lpf_s), 0.0, 1.0)
@@ -836,26 +907,32 @@ func mix_table() -> void:
 		throttle = maxf(throttle, 0.01)
 	if thrust_lin != 0.0:
 		throttle *= 1.0 - thrust_lin * (1.0 - throttle)
-	var mix := PackedFloat64Array([0, 0, 0, 0])
-	var mmax := 0.0
-	var mmin := 0.0
-	for i in 4:
-		var v: float = roll * MIX_ROLL[i] + pitch * MIX_PITCH[i] + yaw * MIX_YAW[i]
-		if v > mmax:
-			mmax = v
-		elif v < mmin:
-			mmin = v
-		mix[i] = v
+	# the quad X mixer (MIX_ROLL, MIX_PITCH, MIX_YAW of the motors 0..3, written out; the signs multiply exactly)
+	var mix := _mix
+	var v := -roll + pitch - yaw
+	var mmax := maxf(v, 0.0)
+	var mmin := minf(v, 0.0)
+	mix[0] = v
+	v = -roll - pitch + yaw
+	mmax = maxf(v, mmax)
+	mmin = minf(v, mmin)
+	mix[1] = v
+	v = roll + pitch + yaw
+	mmax = maxf(v, mmax)
+	mmin = minf(v, mmin)
+	mix[2] = v
+	v = roll - pitch - yaw
+	mmax = maxf(v, mmax)
+	mmin = minf(v, mmin)
+	mix[3] = v
 	motor_mix_range = mmax - mmin
 	var air_pct := 1.0
 	if not airmode and throttle < 0.5:
 		air_pct = 0.5 + throttle
 	var norm := air_pct / motor_mix_range if motor_mix_range > 1.0 else air_pct
-	for i in 4:
-		mix[i] *= norm
 	throttle = clampf(throttle, -mmin * norm, 1.0 - mmax * norm)
 	for i in 4:
-		var o := mix[i] + throttle
+		var o := mix[i] * norm + throttle
 		if thrust_lin != 0.0:
 			var inv := 1.0 - o
 			o *= 1.0 + thrust_lin * inv * (1.0 + thrust_lin * (inv - o))

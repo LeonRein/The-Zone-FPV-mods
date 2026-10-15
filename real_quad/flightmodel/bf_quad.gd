@@ -85,6 +85,12 @@ var charge_t: float = 0.0
 var turb_x1 := PackedFloat64Array([0, 0, 0, 0])
 var turb_x2 := PackedFloat64Array([0, 0, 0, 0])
 var rng := RandomNumberGenerator.new()
+# the turbulence's constants (a resonator at turb_hz, damping ratio 0.5), and its noise drive for the dt of the last step
+var _turb_w0: float
+var _turb_w0sq: float
+var _turb_c: float
+var _turb_dt: float = -1.0
+var _turb_drive: float = 0.0
 
 
 func _init(p: Dictionary) -> void:
@@ -111,6 +117,9 @@ func _init(p: Dictionary) -> void:
 	prop_radius = float(p.prop_radius)
 	turb_base_ms = float(p.turb_base_ms)
 	turb_hz = float(p.pw_noise_hz)
+	_turb_w0 = 2.0 * PI * turb_hz
+	_turb_w0sq = _turb_w0 * _turb_w0
+	_turb_c = 4.0 * 0.5 * _turb_w0 * _turb_w0 * _turb_w0
 	rng.seed = int(p.get("seed", 1))
 	reset()
 
@@ -174,55 +183,75 @@ func _prop_load(i: int, v_axial: float) -> float:
 ## Advance the quad by dt. u = motor commands 0..1 (already delayed), basis = body->world (Godot),
 ## vel = world velocity, pos = world position. Updates the rotor speeds and the body rates (omega)
 ## and returns the world linear acceleration including gravity.
+##
+## (Written for speed - this runs at the rate of the firmware's PID loop, 4-8 kHz: the rotors' loops are
+## one, the sums run in the order of the rotors, the turbulence constants are worked out once.)
 func step(u: PackedFloat64Array, dt: float, basis: Basis, vel: Vector3, _pos: Vector3, _armed: bool) -> Vector3:
 	# velocity relative to the air (which moves where the quad flies through its old wake)
-	var vb := local_to_flu(basis.transposed() * (vel - air_vel - wind))     # (orthonormal: transposed = inverse)
+	var vl := (vel - air_vel - wind) * basis     # (orthonormal: v * basis = basis.transposed() * v), world -> body
+	var vb := Vector3(-vl.z, -vl.x, vl.y)        # local_to_flu()
 	var v_ax := vb.z
 	# battery: the pack's voltage under the motors' current
 	var i_proxy := 0.0
 	for i in 4:
-		i_proxy += u[i] * maxf(u[i] * v_batt - w[i] / kv, 0.0)
+		var ui := u[i]
+		i_proxy += ui * maxf(ui * v_batt - w[i] / kv, 0.0)
 	current_proxy = i_proxy
 	v_batt = src_v - src_rp * i_proxy - src_ra * amps      # (amps of the last step)
-	# ESC/motors and rotor thrust with inflow
-	var t_total := 0.0
-	var wsum := 0.0
-	var own_load := v_ax != 0.0 and not (has_air and v_ax < 0.0)     # _prop_load(), inlined (hot loop)
-	for i in 4:
-		var load := clampf(1.0 - v_ax / maxf(w[i] * pitch_m_per_rad, 1.0), PROP_LOAD_MIN, PROP_LOAD_MAX) if own_load else 1.0
-		var wd := ma[i] * (u[i] * v_batt - w[i] / kv) - mb[i] * load * w[i] * w[i] - mc[i]
-		if u[i] <= 0.0:
-			wd = minf(wd, 0.0)       # a stopped motor never spins itself up (offset c < 0 on two motors)
-		var wn := maxf(w[i] + wd * dt, 0.0)
-		wdot[i] = (wn - w[i]) / dt
-		w[i] = wn
 	# calm-air turbulence: an air velocity fluctuation u' along each prop's axis changes its angle
 	# of attack, dT = -kT * w * u' / pitch (relatively strongest at low rpm, as real propwash);
 	# dirty_air's wake flow and gusts at each prop act the same way
 	var u_amp := turb_base_ms if turbulence_enabled else 0.0
-	if u_amp > 0.0:
-		var w0 := 2.0 * PI * turb_hz
-		var zeta := 0.5
-		var drive := sqrt(4.0 * zeta * w0 * w0 * w0 / dt)   # unit-variance band-limited noise
-		for i in 4:
-			var e := rng.randfn(0.0, 1.0) * drive
-			var a := e - 2.0 * zeta * w0 * turb_x2[i] - w0 * w0 * turb_x1[i]
-			turb_x2[i] += a * dt
-			turb_x1[i] += turb_x2[i] * dt
+	var turb := u_amp > 0.0
+	var drive := 0.0
+	if turb:
+		if dt != _turb_dt:
+			_turb_dt = dt
+			_turb_drive = sqrt(_turb_c / dt)    # unit-variance band-limited noise
+		drive = _turb_drive
+	# ESC/motors and rotor thrust with inflow (the air and the turbulence along each prop's axis, with the updated rotor speed)
+	var own_load := v_ax != 0.0 and not (has_air and v_ax < 0.0)     # _prop_load(), inlined (hot loop)
+	var vbat := v_batt
+	var t_total := 0.0
+	var wsum := 0.0
+	var wsq := 0.0
 	var p_mech := 0.0
-	for i in 4:                      # with the updated rotor speed
-		var k := clampf(1.0 - v_ax / maxf(w[i] * pitch_m_per_rad, 1.0), PROP_LOAD_MIN, PROP_LOAD_MAX) if own_load else 1.0
-		p_mech += maxf(kQ * k * w[i] * w[i] * w[i] + j_rotor * w[i] * wdot[i], 0.0)
-		var dv := u_amp * turb_x1[i] if u_amp > 0.0 else 0.0   # the prop's extra axial speed through the air
+	var tz := 0.0
+	for i in 4:
+		var wo := w[i]
+		var ui := u[i]
+		var load := clampf(1.0 - v_ax / maxf(wo * pitch_m_per_rad, 1.0), PROP_LOAD_MIN, PROP_LOAD_MAX) if own_load else 1.0
+		var wd := ma[i] * (ui * vbat - wo / kv) - mb[i] * load * wo * wo - mc[i]
+		if ui <= 0.0:
+			wd = minf(wd, 0.0)       # a stopped motor never spins itself up (offset c < 0 on two motors)
+		var wn := maxf(wo + wd * dt, 0.0)
+		var wdi := (wn - wo) / dt
+		wdot[i] = wdi
+		w[i] = wn
+		var dv := 0.0
+		if turb:
+			var e := rng.randfn(0.0, 1.0) * drive
+			var x2 := turb_x2[i]
+			var x1 := turb_x1[i]
+			x2 += (e - _turb_w0 * x2 - _turb_w0sq * x1) * dt
+			x1 += x2 * dt
+			turb_x2[i] = x2
+			turb_x1[i] = x1
+			dv = u_amp * x1      # the prop's extra axial speed through the air
+		var den := maxf(wn * pitch_m_per_rad, 1.0)
+		var k := clampf(1.0 - v_ax / den, PROP_LOAD_MIN, PROP_LOAD_MAX) if own_load else 1.0
+		p_mech += maxf(kQ * k * wn * wn * wn + j_rotor * wn * wdi, 0.0)
 		if has_air:
 			k *= air_mean * (1.0 + air_fluct[i])
 			dv -= air_axial[i]
 		if dv != 0.0:                # the load's slope, -1/(w*pitch) per m/s, whatever the load
-			k = maxf(k - dv / maxf(w[i] * pitch_m_per_rad, 1.0), 0.0)
-		var t := kT * w[i] * w[i] * k * thrust_scale[i] * prop_scale[i]
+			k = maxf(k - dv / den, 0.0)
+		var t := kT * wn * wn * k * thrust_scale[i] * prop_scale[i]
 		thrust[i] = t
 		t_total += t
-		wsum += w[i]
+		wsum += wn
+		wsq += wn * wn
+		tz -= yaw_spin[i] * (kQ * wn * wn + j_rotor * wdi)
 	amps = p_mech * volts_per_pack_volt / (drive_efficiency * maxf(v_batt, 1.0))
 	charge_as += amps * dt
 	charge_vs += v_batt * dt
@@ -230,15 +259,13 @@ func step(u: PackedFloat64Array, dt: float, basis: Basis, vel: Vector3, _pos: Ve
 	# torques (FLU)
 	var tx := arm * (thrust[2] + thrust[3] - thrust[0] - thrust[1])
 	var ty := arm * (thrust[0] + thrust[2] - thrust[1] - thrust[3])
-	var tz := 0.0
-	for i in 4:
-		tz -= yaw_spin[i] * (kQ * w[i] * w[i] + j_rotor * wdot[i])
 	var tau := Vector3(tx, ty, tz) + torque_bias * t_total
-	var damp := rate_damping * (sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2] + w[3] * w[3]) * 1e-3)
+	var damp := rate_damping * (sqrt(wsq) * 1e-3)
 	omega += ((tau - omega.cross(inertia * omega)) / inertia - damp * omega) * dt
 	# forces (FLU body): thrust, quadratic body drag, linear in-plane rotor drag
 	var f := Vector3(0.0, 0.0, t_total)
 	f -= 0.5 * RHO * vb.length() * cd_area * vb
-	f.x -= rotor_drag * wsum * vb.x
-	f.y -= rotor_drag * wsum * vb.y
-	return basis * flu_to_local(f) / mass + Vector3(0.0, -G, 0.0)
+	var rw := rotor_drag * wsum
+	f.x -= rw * vb.x
+	f.y -= rw * vb.y
+	return basis * Vector3(-f.y, f.z, -f.x) / mass + Vector3(0.0, -G, 0.0)     # (flu_to_local)
