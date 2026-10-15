@@ -29,6 +29,14 @@ extends Node
 ## say) show one at a time, picked from a list that starts on the drone being
 ## flown - or the one it is built on, for a drone a mod adds (zm_vehicle).
 ##
+## Two small hooks more, for a mod with things to do or lists that change:
+##     func zm_settings_actions() -> Array     # [{label, method, tip}]
+## buttons in a row under the page's status line; each calls the mod's own
+## method of that name (no arguments), then the page is drawn again;
+##     func zm_settings_choices(section: String, key: String) -> PackedStringArray
+## the choices of a string setting in place of the ones its note lists (real_quad:
+## the models there are, which change); empty = leave the setting as it is.
+##
 ## Uninstall: delete the mod_settings folder.
 
 const VERSION := "1.0"
@@ -433,7 +441,7 @@ func mod_loaded(id: String) -> bool:
 ## The form: settings.default.cfg's, then any the mod adds from its other
 ## files (zm_settings_more)
 func model(id: String) -> Array:
-	var items: Array = _mods[id]["model"]
+	var items: Array = DOC.with_choices(_mods[id]["model"], _node(id))
 	var n := _node(id)
 	if n == null or not n.has_method("zm_settings_more"):
 		return items
@@ -446,6 +454,25 @@ func model(id: String) -> Array:
 				and (str(it.get("kind", "value")) != "value" or it.has("key")):
 			out.append(_complete(it))
 	return out
+
+
+## The buttons a mod adds to its page (zm_settings_actions): [{label, method, tip}]
+func actions(id: String) -> Array:
+	var n := _node(id)
+	if n == null or not n.has_method("zm_settings_actions"):
+		return []
+	return DOC.clean_actions(n.call("zm_settings_actions"), n)
+
+
+## A button pressed: the mod's method, if the mod offered it
+func run_action(id: String, method: String) -> void:
+	var n := _node(id)
+	for a in actions(id):
+		if a["method"] == method:
+			_say("%s: %s" % [id, a["label"]])
+			n.call(method)
+			_write_status()
+			return
 
 
 # a file in the mod's own folder, by name, and not its settings

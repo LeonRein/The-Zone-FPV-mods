@@ -122,6 +122,42 @@ static func _join(lines: PackedStringArray) -> String:
 	return "\n".join(out)
 
 
+## The items with the choices a mod gives for a string setting
+## (zm_settings_choices(section, key) -> PackedStringArray) in place of the
+## ones its note lists; an empty answer leaves the item as it is.
+static func with_choices(items: Array, mod: Object) -> Array:
+	if mod == null or not mod.has_method("zm_settings_choices"):
+		return items
+	var out := items.duplicate()
+	for i in out.size():
+		var it: Dictionary = out[i]
+		if it.get("kind") != "value" or int(it.get("type", TYPE_STRING)) != TYPE_STRING or str(it.get("file", "")) != "":
+			continue
+		var got = mod.call("zm_settings_choices", str(it["section"]), str(it["key"]))
+		if not (got is PackedStringArray or got is Array) or got.is_empty():
+			continue
+		var list := []
+		for c in got:
+			if not str(c) in list:
+				list.append(str(c))
+		it = it.duplicate()
+		it["options"] = list
+		out[i] = it
+	return out
+
+
+## What a mod's zm_settings_actions() gave, as [{label, method, tip}] - only
+## what is a button the mod can answer: a label and one of its own methods.
+static func clean_actions(got: Variant, mod: Object) -> Array:
+	var out := []
+	if mod == null or not (got is Array):
+		return out
+	for a in got:
+		if a is Dictionary and str(a.get("label", "")) != "" and mod.has_method(str(a.get("method", ""))):
+			out.append({"label": str(a["label"]), "method": str(a["method"]), "tip": str(a.get("tip", ""))})
+	return out
+
+
 static func _options(desc: String, value: String) -> Array:
 	var re := RegEx.create_from_string("\"([^\"]*)\"")
 	var out := []
