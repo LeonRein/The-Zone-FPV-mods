@@ -29,21 +29,65 @@ static func punches(logs: Array, uses: Array, thr: float = 0.8, min_s: float = 0
 
 static func coverage(logs: Array, uses: Array, segs: Array, chirp_s: float, hover: Variant, dfit: Dictionary, events: Array, acc_ok: bool, vbat_ok: bool) -> Dictionary:
 	var sweeps := {"roll": 0, "pitch": 0, "yaw": 0}
+	var aborted := {"roll": [], "pitch": [], "yaw": []}    # [duration, needed] s of each chirp stopped before a full sweep
 	for li in logs.size():
 		var sweep_s := float(logs[li].hint("chirp_time_seconds", 20))
 		if sweep_s == 0.0:
 			sweep_s = 20.0
 		for c in segs[li].chirps:
+			var ax: String = ["roll", "pitch", "yaw"][c[2]]
 			if c[1] >= 0.8 * sweep_s:
-				sweeps[["roll", "pitch", "yaw"][c[2]]] += 1
+				sweeps[ax] += 1
+			else:
+				aborted[ax].append([Num.pyround(float(c[1]), 1), Num.pyround(0.8 * sweep_s, 1)])
 	var unfilt := true
 	for L in logs:
 		if not L.info.flags.get("unfilt", false):
 			unfilt = false
-	return {"chirp_s": Num.pyround(chirp_s, 1), "sweeps": sweeps, "acc_ok": acc_ok, "vbat_ok": vbat_ok,
+	return {"chirp_s": Num.pyround(chirp_s, 1), "sweeps": sweeps, "aborted": aborted, "acc_ok": acc_ok, "vbat_ok": vbat_ok,
 		"hover_s": float(hover.n_s) if hover != null else 0.0, "hover_source": hover.source if hover != null else null,
 		"punches": punches(logs, uses), "drag_passes": int(dfit.get("n_pass", 0)), "roll_events": events.size(),
 		"unfilt": unfilt}
+
+
+## What the chirp coverage found, per axis, aborted sweeps included (report.md "What the logs cover").
+static func chirp_text(cov: Dictionary) -> String:
+	var sw: Dictionary = cov.sweeps
+	var ab: Dictionary = cov.get("aborted", {})
+	var any_ab := false
+	for ax in ab:
+		any_ab = any_ab or not ab[ax].is_empty()
+	if sw.roll == 0 and sw.pitch == 0 and sw.yaw == 0 and not any_ab:
+		return "Chirp sweeps: none found (the CHIRP mode was not switched on while armed)."
+	var parts: Array = []
+	for ax in ["roll", "pitch", "yaw"]:
+		var bits: Array = []
+		if sw[ax] > 0:
+			bits.append("%d full sweep%s" % [sw[ax], "s" if sw[ax] > 1 else ""])
+		var a: Array = ab.get(ax, [])
+		if not a.is_empty():
+			var need := 0.0
+			var durs: Array = []
+			for x in a:
+				need = maxf(need, float(x[1]))
+				durs.append("%d s" % int(float(x[0]) + 0.5))
+			bits.append("%d aborted after %s (needs ≥ %d s)" % [a.size(), " and ".join(durs), int(need + 0.5)])
+		parts.append("%s: %s" % [ax, ", ".join(bits) if not bits.is_empty() else "none"])
+	return "Chirp sweeps found: " + "; ".join(parts) + " (the grade A wants 2 roll, 2 pitch, 1 yaw, and 30 s of sweeps in all)."
+
+
+const TOP_SPEED_WHERE := "Models… → the model → Parameters → Top speed"
+
+
+## Which drag figures were measured and which are defaults, and where to enter the top speed.
+static func drag_text(rd_ok: bool, body_src: String, top_given: String = "") -> String:
+	var rotor := "rotor drag measured from the accelerometer" if rd_ok else "rotor drag not measurable from these logs (too few passes from a hover) → default 0.40 1/s"
+	if body_src == "acc":
+		return "Drag: %s; body drag and top speed measured from the accelerometer." % rotor
+	if body_src == "top_speed":
+		return "Drag: %s; body drag set from the top speed given (%s km/h), the accelerometer cannot measure it from these logs." % [rotor, top_given]
+	return ("Drag: %s; body drag / top speed not measurable from these logs (needs long fast straight passes; above ~85 %% throttle "
+		+ "the accelerometer is unusable from vibration) → class default. Enter the top speed in the model's parameters to set it (%s).") % [rotor, TOP_SPEED_WHERE]
 
 
 ## [letter, [[cap, reason], ...]]; gates: [{id, name, state, ...}].
@@ -107,7 +151,9 @@ static func fly_next(cov: Dictionary, cls: String, pid_khz: float, log_rate_ok: 
 		for pair in [["roll", 2], ["pitch", 2], ["yaw", 1]]:
 			var need: int = pair[1] - sw[pair[0]]
 			if need > 0:
-				items.append("%d more chirp round%s on %s (full %d s sweeps)" % [need, "s" if need > 1 else "", pair[0], ch.time_s])
+				var n_ab: int = cov.get("aborted", {}).get(pair[0], []).size()
+				items.append("%d more chirp round%s on %s (full %d s sweeps%s)" % [need, "s" if need > 1 else "", pair[0], ch.time_s,
+					"; keep CHIRP on until the sweep ends, an aborted one does not count" if n_ab > 0 else ""])
 	if not cov.acc_ok:
 		items.append("Turn on ACC logging: `set blackbox_disable_acc = OFF` (ACC on and calibrated)")
 		cli = true

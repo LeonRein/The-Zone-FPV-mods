@@ -19,6 +19,7 @@ var runtime := 0.0
 var grade := ""
 var grade_caps: Array = []
 var fly: Array = []
+var cover: Array = []                # what the logs cover (chirp sweeps per axis, drag), lines
 var cli: Variant = null
 var hover_spread := 0.0
 var e1 := 0.0
@@ -342,6 +343,11 @@ func render() -> String:
 			out.append("- all coverage items and critical checks met")
 		for cap in grade_caps:
 			out.append("- %s: %s" % [cap[0], cap[1]])
+		out.append("")
+	if not cover.is_empty():
+		out.append("## What the logs cover")
+		for x in cover:
+			out.append("- " + x)
 		out.append("")
 	for b in banners:
 		out += ["> **%s**" % b, ""]

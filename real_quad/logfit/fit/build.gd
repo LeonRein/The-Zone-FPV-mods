@@ -653,10 +653,11 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 	var fn := Grade.fly_next(cov, cls, src.pid_hz() / 1000.0, rate_ok)
 	var fly: Array = fn[0]
 	if body_src == "default":
-		fly.append("Enter the quad's top speed in the form (the body drag is a class default), or fly 3 straight fast passes started from a hover")
+		fly.append("Enter the quad's top speed in the model's parameters (%s): the body drag is a class default" % Grade.TOP_SPEED_WHERE)
 	rep.grade = letter
 	rep.grade_caps = caps
 	rep.fly = fly
+	rep.cover = [Grade.chirp_text(cov), Grade.drag_text(rd_ok, body_src, Report.fmt_g(float(c.top_speed_kmh), 12) if c.get("top_speed_kmh") else "")]
 	rep.cli = Classes.chirp_cli(cls, src.pid_hz() / 1000.0) if fn[1] else null
 	if not acc_ok:
 		rep.banners.append("No accelerometer data: hover from the steady rule (about 20 % uncertainty in kT), no drag measurement. Turn on ACC logging: set blackbox_disable_acc = OFF")
