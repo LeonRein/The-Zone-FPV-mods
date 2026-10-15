@@ -61,6 +61,7 @@ const NOISE_PITCH_MIN := 0.7              # keeps some air in the hiss at idle
 const NOISE_PITCH_MAX := 2.5
 const SMOOTH_S := 0.01                   # voice pitch follows its target with this time constant
 const SILENT_DB := -80.0
+const LN10 := 2.302585092994046              # log(10.0)
 const REV_HZ_AT_UNIT_PITCH := float(RATE) / TABLE_N     # f_rev played at pitch_scale 1
 
 var players: Array[AudioStreamPlayer] = []     # the four voices
@@ -240,18 +241,19 @@ func set_targets(rpm: PackedFloat32Array, base_db: float, doppler: float, playin
 
 ## (rpm / ref) ^ exp_lo below ref, ^ exp_hi above, in dB, lifting at most BOOST_MAX_DB.
 static func speed_law_db(rpm: float, ref: float, exp_lo: float, exp_hi: float) -> float:
-	var l := log(maxf(rpm, 1.0) / ref) / log(10.0)
+	var l := log(maxf(rpm, 1.0) / ref) / LN10
 	return minf(20.0 * (exp_lo if l < 0.0 else exp_hi) * l, BOOST_MAX_DB)
 
 
 ## Level of a voice at rotor speed rpm relative to VOICE_DB [dB]: the speed law (at most BOOST_MAX_DB) and
-## the blade-pass high-pass.
+## the blade-pass high-pass. (speed_law_db() written in, as this runs for each voice every physics tick.)
 static func tone_gain_db(rpm: float) -> float:
 	var r := maxf(rpm, 1.0)
-	var law := speed_law_db(r, TONE_REF_RPM, TONE_EXP, TONE_EXP_HI)
+	var l := log(r / TONE_REF_RPM) / LN10
+	var law := minf(20.0 * (TONE_EXP if l < 0.0 else TONE_EXP_HI) * l, BOOST_MAX_DB)
 	var x := 3.0 * r / 60.0 / TONE_HP_HZ
 	var xn := pow(x, TONE_HP_ORDER)
-	return law + 20.0 * log(xn / sqrt(1.0 + xn * xn)) / log(10.0)
+	return law + 20.0 * log(xn / sqrt(1.0 + xn * xn)) / LN10
 
 
 ## Stops all voices now (before the bus they are on goes).
@@ -284,8 +286,9 @@ func _process(dt: float) -> void:
 	_fresh = false
 	for i in players.size():
 		_smooth[i] += (target_pitch[i] - _smooth[i]) * k
-		players[i].pitch_scale = maxf(_smooth[i], 0.01)
-		players[i].volume_db = target_db[i]
+		var p := players[i]
+		p.pitch_scale = maxf(_smooth[i], 0.01)
+		p.volume_db = target_db[i]
 	_noise_smooth += (noise_target_pitch - _noise_smooth) * k
 	noise_player.pitch_scale = maxf(_noise_smooth, 0.01)
 	noise_player.volume_db = noise_target_db
