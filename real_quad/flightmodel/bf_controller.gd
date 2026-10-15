@@ -897,7 +897,8 @@ func mix_table() -> void:
 	ag_s += ag_k * (ag_s1 - ag_s)
 	ag_throttle_d = ag_s
 	tpa_factor = _tpa_classic(clampf(throttle, 0.0, 1.0))
-	_dyn_lpf_update(throttle)
+	if t_us - dyn_lpf_last_us >= 5000:      # (_dyn_lpf_update() does nothing before)
+		_dyn_lpf_update(throttle)
 	if throttle_boost > 0.0:
 		throttle_lpf_s += throttle_lpf_k * (throttle - throttle_lpf_s)
 		throttle = clampf(throttle + throttle_boost * (throttle - throttle_lpf_s), 0.0, 1.0)

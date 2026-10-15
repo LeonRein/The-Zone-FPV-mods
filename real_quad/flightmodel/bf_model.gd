@@ -514,7 +514,6 @@ func integrate_forces(_body: RigidBody3D, state: PhysicsDirectBodyState3D, rc: D
 	var dt := tick_dt / float(n_sub)
 	var gyro := PackedFloat64Array([0, 0, 0])
 	var telemetry_hz := PackedFloat64Array([0, 0, 0, 0])
-	var u := PackedFloat64Array([0, 0, 0, 0])
 	var ud := PackedFloat64Array([0, 0, 0, 0])
 	var ang_sum := Vector3()
 	var vib_lvl := 0.0
@@ -525,38 +524,44 @@ func integrate_forces(_body: RigidBody3D, state: PhysicsDirectBodyState3D, rc: D
 			vib_lvl += _vib[i]
 	var vib_a := 1.0 - exp(-TAU * VIB_NOISE_HZ * dt)
 	var vib_sc := VIB_NOISE_DPS * sqrt(vib_lvl)
+	var dt_us := roundi(dt * 1e6)
+	var q := quad
+	var f := fc
+	var w := q.w                 # (cached: this loop runs at the firmware's PID rate)
+	var mq := _mq
 	for k in n_sub:
 		if _t_us >= _next_frame_us:
-			fc.rx_frame(rcdata, _t_us + 1)
+			f.rx_frame(rcdata, _t_us + 1)
 			_next_frame_us += _rx_frame_us
-		fc.t_us = _t_us
-		var om := quad.omega * (180.0 / PI)
+		f.t_us = _t_us
+		var om := q.omega * (180.0 / PI)
 		gyro[0] = om.x
 		gyro[1] = om.y
 		gyro[2] = om.z
 		if vib_lvl > 0.0:
 			_vibrate(gyro, dt, vib_a, vib_sc)
-		for i in 4:
-			telemetry_hz[i] = quad.w[i] / TAU
-		var m := fc.step(gyro, telemetry_hz)
-		for i in 4:     # DShot 48..2047 -> 0..1; 0 = motor stopped (disarmed)
-			u[i] = clampf((m[i] - 48.0) / 1999.0, 0.0, 1.0) if m[i] > 0.0 else 0.0
+		telemetry_hz[0] = w[0] / TAU
+		telemetry_hz[1] = w[1] / TAU
+		telemetry_hz[2] = w[2] / TAU
+		telemetry_hz[3] = w[3] / TAU
+		var m := f.step(gyro, telemetry_hz)
 		var o := _mq_i * 4
-		for i in 4:                  # the command of _mq_n steps ago goes to the motors, this one waits
-			var c := _mq[o + i]
-			_mq[o + i] = u[i]
-			ud[i] = c
+		for i in 4:     # DShot 48..2047 -> 0..1; 0 = motor stopped (disarmed)
+			var mi := m[i]
+			ud[i] = mq[o + i]        # the command of _mq_n steps ago goes to the motors, this one waits
+			mq[o + i] = clampf((mi - 48.0) / 1999.0, 0.0, 1.0) if mi > 0.0 else 0.0
 		_mq_i = (_mq_i + 1) % _mq_n
-		var acc := quad.step(ud, dt, basis, _vel, pos, armed)
+		var acc := q.step(ud, dt, basis, _vel, pos, armed)
 		# attitude update with the new body rates
-		var rot_local := Quad.flu_to_local(quad.omega) * dt
+		var qo := q.omega
+		var rot_local := Vector3(-qo.y, qo.z, -qo.x) * dt     # (Quad.flu_to_local)
 		ang_sum += basis * rot_local
 		var angle := rot_local.length()
 		if angle > 1e-12:
 			basis = basis * Basis(rot_local / angle, angle)
 		_vel += acc * dt
 		pos += _vel * dt
-		_t_us += roundi(dt * 1e6)
+		_t_us += dt_us
 	# hand back mean velocities that move the body from its start pose to the integrated pose.
 	# (A quaternion log of the tick's rotation would not work: Godot's math is single precision
 	# and cos() of a 1e-4 rad rotation rounds to exactly 1.)
