@@ -1,24 +1,25 @@
 {
-  "id": "freestyle35",
-  "name": "3.5\" freestyle, 300 g, 4S",
-  "zone_vehicle_id": "3.5in_freestyle",
-  "mass_kg": 0.3,
+ "id": "freestyle35",
+ "name": "3.5\" freestyle, 300 g, 4S",
+ "zone_vehicle_id": "3.5in_freestyle",
+ "mass_kg": 0.3,
+ "cells": 4,
+ "battery": {
   "cells": 4,
-  "battery": {
-    "cells": 4,
-    "capacity_mah": 850,
-    "lihv": false
-  },
-  "motor": {
-    "kv": 3650,
-    "size": "1604.5"
-  },
-  "prop": {
-    "model": "Gemfan Bash 3525-3",
-    "diameter_in": 3.5,
-    "pitch_in": 2.5,
-    "blades": 3
-  },
-  "camera_angle_deg": 20,
-  "camera_fov_deg": 123
+  "capacity_mah": 850,
+  "lihv": false
+ },
+ "motor": {
+  "kv": 3650
+ },
+ "prop": {
+  "diameter_in": 3.5,
+  "pitch_in": 2.5,
+  "blades": 3
+ },
+ "ducted": false,
+ "class": "mini",
+ "camera_angle_deg": 20,
+ "camera_fov_deg": 123,
+ "package_format": 2
 }
