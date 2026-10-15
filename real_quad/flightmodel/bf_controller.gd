@@ -757,18 +757,6 @@ func gyro_update(rates_dps: PackedFloat64Array, telemetry_hz: PackedFloat64Array
 
 
 # ------------------------------------------------------------------ pid.c
-func _tpa_classic(arg: float) -> float:
-	var past := arg >= tpa_low_bp or tpa_low_bp <= 0.01
-	var rate := 0.0
-	if past or tpa_low_faded:
-		rate = tpa_mult * maxf(arg - tpa_bp, 0.0)
-		if tpa_low_always == 0 and not tpa_low_faded:
-			tpa_low_faded = true
-	else:
-		rate = tpa_low_mult * (tpa_low_bp - arg)
-	return 1.0 - rate
-
-
 var _gdt := PackedFloat64Array([0, 0, 0])   # pid_controller's scratch: the gyro for the D term
 func pid_controller() -> void:
 	ag_throttle_d *= ag_gain
@@ -905,7 +893,15 @@ func mix_table() -> void:
 	ag_s1 += ag_k * (td - ag_s1)
 	ag_s += ag_k * (ag_s1 - ag_s)
 	ag_throttle_d = ag_s
-	tpa_factor = _tpa_classic(clampf(throttle, 0.0, 1.0))
+	# TPA, classic (throttle is within 0..1 here)
+	var tpa_rate := 0.0
+	if throttle >= tpa_low_bp or tpa_low_bp <= 0.01 or tpa_low_faded:
+		tpa_rate = tpa_mult * maxf(throttle - tpa_bp, 0.0)
+		if tpa_low_always == 0 and not tpa_low_faded:
+			tpa_low_faded = true
+	else:
+		tpa_rate = tpa_low_mult * (tpa_low_bp - throttle)
+	tpa_factor = 1.0 - tpa_rate
 	if t_us - dyn_lpf_last_us >= 5000:      # (_dyn_lpf_update() does nothing before)
 		_dyn_lpf_update(throttle)
 	if throttle_boost > 0.0:
