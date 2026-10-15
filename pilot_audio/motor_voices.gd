@@ -1,24 +1,35 @@
 extends Node
-## pilot_audio: your own quad's motor sound as four voices, one per motor (prototype, motor_voices).
+## pilot_audio: your own quad's motor sound as four voices, one per motor
+## (motor_voices, a prototype).
 ##
-## The game plays one recording for the whole quad. Here each motor has a voice of its own, played at the
-## speed of that rotor, so rolls, yaws and punches are heard as the four pitches moving apart and together.
-## The timbre follows an analysis of the game's own recording (a real 3-blade quad): the blade pass
-## (harmonic 3 of the shaft rotation) carries almost everything, its octave (6) is at -10 dB, 9 at -22 dB,
-## the shaft rate and the rest at -32 dB and below; each line has a narrow noise skirt (blade loading
-## turbulence) and under it lies a broadband floor 45-60 dB down. Loudness goes with the rotor speed as a
-## rotor's does, tones steeper than the noise bed, with a high-pass at the blade pass (low tones fade); both
-## ride on the game's own law and equal it at the recording's speed. Relative to the game's level at 15k rpm:
-## 4k rpm -24 dB, 11k -7 dB, 27k +14 dB. The setting motor_voices_db shifts it all for taste. So a voice is a looped wavetable of
-## TABLE_REVS shaft revolutions: harmonic h is Re{(1 + SKIRT z) exp(i (h theta + phi_h))} with z a slow
-## complex noise (SKIRT_CTRL points per revolution, low-passed at SKIRT_FC cycles per revolution), so the
-## skirts scale with the speed like the lines. A quiet noise bed rides with the mean speed. The recipe is the
-## one fpv-sim/tools/render_motor_sound.py renders offline (keep the two in step).
+## The game plays one recording for the whole quad. Here each motor has a voice
+## of its own, played at the speed of that rotor, so rolls, yaws and punches
+## are heard as the four pitches moving apart and together.
 ##
-## audio.gd owns when this runs and what it hears: it puts the voices on the quad's own audio bus (distance,
-## air, walls, stereo as for the game's sound), hands in the loudness the game would play, the doppler
-## factor and the four rotor speeds (rpm, from the quad body's meta "motor_rpm") every physics tick.
-## Here, every frame, the voice pitches follow the targets smoothly.
+## The sound follows an analysis of the game's own recording (a real 3-blade
+## quad). The blade pass (harmonic 3 of the shaft rotation) carries almost
+## everything; its octave (6) is at -10 dB, 9 at -22 dB, the shaft rate and the
+## rest at -32 dB and below. Each line has a narrow skirt of noise (blade
+## loading turbulence), and under it lies a broadband floor 45-60 dB down.
+## Loudness goes with the rotor speed as a rotor's does - tones steeper than
+## the noise - with a high-pass at the blade pass, so low tones fade; both
+## follow the game's own law and equal it at the recording's speed. Relative to
+## the game's level at 15k rpm: 4k rpm -24 dB, 11k -7 dB, 27k +14 dB.
+## motor_voices_db shifts it all for taste.
+##
+## A voice is a looped wavetable of TABLE_REVS shaft revolutions: harmonic h is
+## Re{(1 + SKIRT z) exp(i (h theta + phi_h))} with z a slow complex noise
+## (SKIRT_CTRL points per revolution, low-passed at SKIRT_FC cycles per
+## revolution), so the skirts scale with the speed like the lines. A quiet
+## noise bed rides with the mean speed. An offline renderer of the same
+## recipe, outside this mod, must be kept in step with it.
+##
+## audio.gd decides when this runs and what it hears: it puts the voices on the
+## quad's own audio bus (distance, air, walls and stereo as for the game's
+## sound) and hands in, every physics tick, the loudness the game would play,
+## the doppler factor and the four rotor speeds (rpm, from the quad body's meta
+## "motor_rpm"). Here, every frame, the voice pitches follow their targets
+## smoothly.
 
 const RATE := 48000                      # table / noise sample rate [Hz]
 const TABLE_N := 128                     # samples per shaft revolution

@@ -30,16 +30,20 @@ extends Node
 ## mix) and their buses are kept for reuse, so the audio layout does not
 ## change while they come and go.
 ##
-## Motor voices (motor_voices, off by default; prototype): when the local quad's body carries the meta
-## "motor_rpm" (a PackedFloat32Array of the four rotor speeds in rpm, published by real_quad), the game's
-## one-recording motor sound is muted and motor_voices.gd plays one voice per motor on the same bus, so
-## distance, air, walls, stereo, delay and doppler apply as before: the loudness the game would play (with
-## its delay) and the doppler factor go on top of the voices' own rotor speeds. Without the meta, or with
-## the setting off, nothing changes. Other players' quads are not affected.
+## Motor voices (motor_voices, off by default; a prototype): when the local
+## quad's body carries the meta "motor_rpm" (a PackedFloat32Array of the four
+## rotor speeds in rpm, published by real_quad), the game's one-recording motor
+## sound is muted and motor_voices.gd plays one voice per motor on the same
+## bus. Distance, air, walls, stereo, delay and doppler apply as before: the
+## loudness the game would play (with its delay) and the doppler factor go on
+## top of the voices' own rotor speeds. Without the meta, or with the setting
+## off, nothing changes. Other players' quads are not affected.
 ##
-## Listening from the quad (listen_from = quad): the own quad is heard as with a microphone on it - no
-## distance, air, walls, delay, doppler or stereo, at the loudness the game (or the motor voices) plays it.
-## Other players' quads are then heard from the own quad's position, facing its way. Changes apply live.
+## Listening from the quad (listen_from="quad"): the own quad is heard as with
+## a microphone on it - no distance, air, walls, delay, doppler or stereo, at
+## the loudness the game (or the motor voices) plays it. Other players' quads
+## are then heard from the own quad's position, facing its way. Changes apply
+## at once.
 
 const SOUND_SPEED := 343.0
 const HISTORY_S := 5.0
@@ -62,7 +66,7 @@ const IDLE_RPM := 1200.0
 const AIR_D := [0.0, 10.0, 20.0, 40.0, 70.0, 100.0, 150.0, 200.0, 300.0, 500.0, 800.0, 1200.0, 2000.0]
 const AIR_HZ := [20000.0, 16582.0, 11398.0, 7852.0, 5764.0, 4690.0, 3652.0, 3006.0, 2190.0, 1280.0, 690.0, 451.0, 303.0]
 const WALL_CUTOFF := 1500.0          # what gets round a building
-const VOICES_META := "motor_rpm"     # on the local quad's body: PackedFloat32Array, 4 rotor speeds in rpm
+const VOICES_META := "motor_rpm"     # on the local quad's body: the 4 rotor speeds, rpm
 const VOICES_SCRIPT := "res://pilot_audio/motor_voices.gd"
 const MUTED_DB := -80.0
 
@@ -300,8 +304,9 @@ func _write_local() -> void:
 
 # ---- motor voices (the local quad only) ----
 
-# Four voices instead of the game's recording while the quad publishes its rotor speeds. Runs after
-# _write_local, so the game's loudness (with delay) is known, and mutes the game's player afterwards.
+# Four voices instead of the game's recording while the quad publishes its
+# rotor speeds. Runs after _write_local, so the game's loudness (with delay)
+# is known, and mutes the game's player afterwards.
 func _update_voices() -> void:
 	var rpm = null
 	if _voices_on and _local != null and is_instance_valid(_local.node) and _qa != null and is_instance_valid(_qa):
@@ -347,7 +352,8 @@ func _local_delay() -> bool:
 
 # ---- the pilot ----
 
-# Where the listener is: the pilot at the spawn point, or with listen_from = quad the own quad (facing its way).
+# Where the listener is: the pilot at the spawn point, or with
+# listen_from="quad" the own quad (facing its way).
 func _pilot() -> Vector3:
 	if _onboard and _local != null and is_instance_valid(_local.node):
 		var b := _local.node.global_transform.basis

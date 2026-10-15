@@ -61,23 +61,24 @@ OTHER PLAYERS
   stopping dead.
 
 
-MOTOR VOICES (prototype, off by default)
+MOTOR VOICES (a prototype, off by default)
   The game plays one recording for the whole quad. With motor_voices=true in
-  settings.cfg, your own quad's sound is instead made of four voices, one per
-  motor, each at the speed of that rotor (timbre modelled on the game's own
-  quad recording: blade pass and its overtones with a little turbulence noise
-  around each, plus a quiet noise bed), so a roll
-  or a punch is heard as the four pitches moving apart and together. It needs
-  the quad to publish its rotor speeds; without that, the game's sound plays as
+  settings.cfg, your own quad's sound is made of four voices instead, one per
+  motor, each at the speed of that rotor (the sound is modelled on the game's
+  own quad recording: the blade pass and its overtones with a little
+  turbulence noise around each, over a quiet noise bed). A roll or a punch is
+  heard as the four pitches moving apart and together.
+
+  It needs the quad to publish its rotor speeds, which real_quad does for the
+  drones that have a model; for any other drone, the game's sound plays as
   before. The voices go through the same distance, air, walls, stereo, delay
   and doppler as the game's sound; motor_voices_db sets their loudness against
   it. Other players' quads are not affected.
 
   For mod authors: the quad's body (the game's Player node) carries the meta
   "motor_rpm", a PackedFloat32Array of the four rotor speeds in rpm (shaft
-  revolutions a minute, not electrical), set every physics tick. The recipe is
-  in motor_voices.gd; fpv-sim's tools/render_motor_sound.py renders the same
-  sound offline from a blackbox log.
+  revolutions a minute, not electrical), set every physics tick. The recipe
+  is in motor_voices.gd.
 
 
 TROUBLESHOOTING
