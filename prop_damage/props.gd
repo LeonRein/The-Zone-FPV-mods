@@ -242,14 +242,16 @@ func factor_at(local: Vector3) -> float:
 ## with the spin handed over. Nothing changes for a quad no model flies.
 func set_model(spin: Array) -> Dictionary:
 	_model_frame = Engine.get_physics_frames()
-	var thrust := []
-	var imb := []
-	for i in 4:
-		_model_spin[i] = float(spin[BF_OF[i]]) if spin.size() >= 4 else 0.0
-	for k in 4:
-		thrust.append(float(thrust_factor[BF_OF[k]]))
-		imb.append(float(imbalance[BF_OF[k]]))
-	return {"thrust": thrust, "imbalance": imb}
+	# (BF_OF written out: this is called every physics tick)
+	var ok := spin.size() >= 4
+	_model_spin[0] = float(spin[3]) if ok else 0.0
+	_model_spin[1] = float(spin[1]) if ok else 0.0
+	_model_spin[2] = float(spin[2]) if ok else 0.0
+	_model_spin[3] = float(spin[0]) if ok else 0.0
+	return {
+		"thrust": [float(thrust_factor[3]), float(thrust_factor[1]), float(thrust_factor[2]), float(thrust_factor[0])],
+		"imbalance": [float(imbalance[3]), float(imbalance[1]), float(imbalance[2]), float(imbalance[0])],
+	}
 
 
 # Whether a flight model is flying the quad (it called set_model() within the last ticks)

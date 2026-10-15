@@ -211,10 +211,12 @@ func set_thrust_scale(i: int, v: float) -> void:
 ## the flight controller reads - so its PID reacts as on a quad with a bent prop.
 func set_props(thrust: Array, imbalance: Array) -> void:
 	var any := false
+	var ps := quad.prop_scale
 	for i in 4:
-		quad.prop_scale[i] = clampf(float(thrust[i]), 0.0, 1.0)
-		_imb[i] = clampf(float(imbalance[i]), 0.0, 1.0)
-		any = any or _imb[i] > 0.0
+		ps[i] = clampf(float(thrust[i]), 0.0, 1.0)
+		var b := clampf(float(imbalance[i]), 0.0, 1.0)
+		_imb[i] = b
+		any = any or b > 0.0
 	_vib_on = any
 	if not any:
 		_vib.fill(0.0)
