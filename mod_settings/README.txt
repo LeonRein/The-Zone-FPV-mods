@@ -74,6 +74,8 @@ FOR MOD MAKERS
   When its settings do nothing for now (another mod has taken over), it can
   say why, shown at the top of its settings:
       func zm_settings_status() -> String           # "" when they do
+  The line is read again after each change that is applied, so it can show
+  what the change did.
   A string setting whose note lists quoted choices, its default among them,
   is shown as a list of those choices. Three or more sections in a row are
   shown one at a time, picked from a list (named after the game's drones

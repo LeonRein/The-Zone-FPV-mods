@@ -1,24 +1,24 @@
-# Betaflight 2026.6.2 rate loop (acro mode, quad X) - GDScript port.
-#
-# Ported function by function from the firmware sources at commit e0b7bb01b:
-#   fc/rc.c (rates, RC smoothing, feedforward), flight/pid.c + pid_init.c (PID, I-term relax,
-#   anti-gravity, TPA, D-max), flight/mixer.c + mixer_init.c (airmode mixer, dynamic idle,
-#   throttle boost), drivers/dshot.c (endpoints), sensors/gyro + flight/rpm_filter.c (gyro
-#   filters, RPM notches), common/filter.c (PT1/PT2/PT3, SVF notch).
-# Settings are read from the craft's Betaflight configuration (blackbox header, JSON).
-#
-# Style note: the code deliberately stays close to the C source - same function boundaries, same
-# variable names, filter states as flat packed arrays instead of filter objects - so every line
-# can be checked against the firmware, and to keep the 4 kHz loop cheap in GDScript. A Python
-# reference implementation of the same port, validated open-loop against logged P/I/D/F terms,
-# is compared with this file sample by sample (not part of the mod package).
-#
-# Units as in the firmware: deg/s, rcCommand -500..500, rcData 1000..2000, DShot 48..2047.
-# Axes: Betaflight gyro axes (roll+ right side down, pitch+ nose down, yaw+ nose left).
-# Betaflight is GPL-3.0; this port is a derivative work and GPL-3.0 as well.
-# (No class_name: the scripts are always loaded by preload(), so the same files can live under
-# different res:// paths - mod pack, test project - without clashing global class names.)
 extends RefCounted
+## real_quad: the Betaflight 2026.6.2 rate loop (acro mode, quad X), a GDScript port.
+##
+## Ported function by function from the firmware sources at commit e0b7bb01b:
+##   fc/rc.c (rates, RC smoothing, feedforward), flight/pid.c + pid_init.c (PID, I-term relax,
+##   anti-gravity, TPA, D-max), flight/mixer.c + mixer_init.c (airmode mixer, dynamic idle,
+##   throttle boost), drivers/dshot.c (endpoints), sensors/gyro + flight/rpm_filter.c (gyro
+##   filters, RPM notches), common/filter.c (PT1/PT2/PT3, SVF notch).
+## Settings are read from the craft's Betaflight configuration (blackbox header, JSON).
+##
+## Style note: the code deliberately stays close to the C source - same function boundaries, same
+## variable names, filter states as flat packed arrays instead of filter objects - so every line
+## can be checked against the firmware, and to keep the 4 kHz loop cheap in GDScript. A Python
+## reference implementation of the same port, validated open-loop against logged P/I/D/F terms,
+## is compared with this file sample by sample (not part of the mod package).
+##
+## Units as in the firmware: deg/s, rcCommand -500..500, rcData 1000..2000, DShot 48..2047.
+## Axes: Betaflight gyro axes (roll+ right side down, pitch+ nose down, yaw+ nose left).
+## Betaflight is GPL-3.0; this port is a derivative work and GPL-3.0 as well.
+## (No class_name: the scripts are always loaded by preload(), so the same files can live under
+## different res:// paths - mod pack, test project - without clashing global class names.)
 
 const PTERM_SCALE := 0.032029
 const ITERM_SCALE := 0.244381

@@ -1,20 +1,20 @@
-# Flight model of one craft: the Betaflight rate loop (bf_controller.gd) flying the quad model
-# identified from blackbox logs (bf_quad.gd). Loaded from a model package directory
-# (models/<id>/ with craft.json, fc.json, plant.json; see real_quad/README.txt).
-#
-# Runs as a custom integrator on a RigidBody3D: each physics tick (2 ms at 500 Hz) is sub-stepped
-# at the firmware's PID rate (fc.json looptime_us * pid_process_denom: 4 kHz for freestyle5, 8 kHz
-# for a 3.5" with denom 1). RC frames arrive at the receiver link rate (fc.json rx_rate_hz), motor
-# commands reach the motors with the identified latency. Godot only integrates the pose from the mean
-# velocities handed back each tick and resolves collisions; when a contact (or a teleport) changed
-# those velocities, the internal state is resynchronised from the body.
-#
-# Interface used by the host (a RigidBody3D script): configure_body(), reset(),
-# integrate_forces(), plus settings/telemetry getters. Once a tick, before integrate_forces(), the
-# host hands over the air (apply_air(): dirty_air's prop wash, floor and ceiling at each prop, or
-# clean air) and the battery (set_pack() from the shared pack, fed with take_charge(); or
-# use_identified_sag()).
 extends RefCounted
+## real_quad: the flight model of one craft: the Betaflight rate loop (bf_controller.gd) flying the quad model
+## identified from blackbox logs (bf_quad.gd). Loaded from a model package directory
+## (models/<id>/ with craft.json, fc.json, plant.json; see real_quad/README.txt).
+##
+## Runs as a custom integrator on a RigidBody3D: each physics tick (2 ms at 500 Hz) is sub-stepped
+## at the firmware's PID rate (fc.json looptime_us * pid_process_denom: 4 kHz for freestyle5, 8 kHz
+## for a 3.5" with denom 1). RC frames arrive at the receiver link rate (fc.json rx_rate_hz), motor
+## commands reach the motors with the identified latency. Godot only integrates the pose from the mean
+## velocities handed back each tick and resolves collisions; when a contact (or a teleport) changed
+## those velocities, the internal state is resynchronised from the body.
+##
+## Interface used by the host (a RigidBody3D script): configure_body(), reset(),
+## integrate_forces(), plus settings/telemetry getters. Once a tick, before integrate_forces(), the
+## host hands over the air (apply_air(): dirty_air's prop wash, floor and ceiling at each prop, or
+## clean air) and the battery (set_pack() from the shared pack, fed with take_charge(); or
+## use_identified_sag()).
 
 const Controller := preload("bf_controller.gd")
 const Quad := preload("bf_quad.gd")

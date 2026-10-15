@@ -18,6 +18,8 @@ extends Node
 ## A mod whose settings do nothing just now (another mod has taken over)
 ## can say so, shown in place of the page's usual line, with
 ##     func zm_settings_status() -> String     # "" when they do
+## The line is read again after every change that is applied, so it can show
+## what the settings just did (real_quad: the model that flies the drone now).
 ## and can show settings kept in another .cfg file of its folder on its page
 ## (the drones mod: the drones in my_drones.cfg), written into that file:
 ##     func zm_settings_more() -> Array

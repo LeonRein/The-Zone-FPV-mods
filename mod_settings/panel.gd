@@ -25,6 +25,7 @@ var _body: VBoxContainer = null
 var _scroll: ScrollContainer = null
 var _notice: Label = null
 var _saved: Label = null
+var _status: Label = null     # the mod's line under its name (host.mod_status)
 var _pick := {}               # "mod:first section's item" -> the item index picked
 
 
@@ -163,6 +164,9 @@ func update_state() -> void:
 	_saved.text = s["text"]
 	_saved.tooltip_text = s.get("tip", "")
 	_saved.add_theme_color_override("font_color", GOOD if s["ok"] and not s["pending"] else (DIM if s["ok"] else BAD))
+	# a mod's line can change with its settings (zm_settings_status): read it again
+	if _status != null and is_instance_valid(_status) and _sel != "":
+		_status.text = host.mod_status(_sel)
 
 
 func update_notice() -> void:
@@ -187,6 +191,7 @@ func _show(id: String) -> void:
 	st.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	st.custom_minimum_size = Vector2(120, 0)
 	st.modulate = DIM
+	_status = st
 	_body.add_child(st)
 	var tools := HBoxContainer.new()
 	tools.name = "Tools"
