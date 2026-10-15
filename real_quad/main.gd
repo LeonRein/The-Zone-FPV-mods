@@ -33,14 +33,20 @@ const NEED_METHODS := ["_physics_process", "play_sound", "is_armed", "calc_motor
 const NEED_PROPERTIES := ["stick_pos", "turtle_mode_active", "current_motor_rpm", "_SETTINGS"]
 const ModelRegistry := preload("flightmodel/model_registry.gd")
 
+const DEFAULTS := {
+	"ground_ceiling_effect": true,
+	"battery_capacity_mah": 1300.0,     # for a model package that does not say
+	"unknown_game_version": false,
+}
+# What each drone's section sets (see settings.default.cfg)
+const DRONE_DEFAULTS := {"model": "auto", "propwash": 1.0, "drag": 0.0, "rates": "game"}
+
+var cfg := DEFAULTS.duplicate()
 var registry: ModelRegistry = null
 var on := false                     # the player script is replaced: drones with a model are flown by it
 var generation := 0                 # counts settings.cfg reads, for the hook
-var ground_ceiling_effect := true
-var battery_capacity_mah := 1300.0  # for a model package that does not say
 var own_pack := {}                  # the pack a model flies on without battery_sag (zm_battery)
-var unknown_game_version := false
-var drones := {}                    # vehicle id -> {model, propwash, drag}
+var drones := {}                    # vehicle id -> {model, propwash, drag, rates}
 var settings_path := DIR + "settings.cfg"
 var _core: Node = null
 var _copied := false
@@ -57,6 +63,8 @@ func zm_init(core: Node, _dir: String) -> void:
 	model_roots = PackedStringArray([_game_dir().path_join("models")])
 	_scan_models()
 	read_settings()
+	_say("ground and ceiling effect %s, %d mAh for a model whose package gives no pack size" % [
+		"on" if bool(cfg["ground_ceiling_effect"]) else "off", int(cfg["battery_capacity_mah"])])
 	var why := _copy()
 	if why != "":
 		_why_not = "player_rigid_body.gd - " + why
@@ -73,20 +81,27 @@ func read_settings(path := settings_path) -> void:
 	var c := ConfigFile.new()
 	if c.load(path) != OK and c.load(path.get_base_dir().path_join("settings.default.cfg")) != OK:
 		return
-	ground_ceiling_effect = bool(c.get_value("real_quad", "ground_ceiling_effect", true))
-	battery_capacity_mah = clampf(float(c.get_value("real_quad", "battery_capacity_mah", 1300.0)), 50.0, 100000.0)
-	unknown_game_version = bool(c.get_value("real_quad", "unknown_game_version", false))
+	cfg = DEFAULTS.duplicate()
+	for k in DEFAULTS:
+		if c.has_section_key("real_quad", k):
+			var v = c.get_value("real_quad", k)
+			cfg[k] = bool(v) if DEFAULTS[k] is bool else float(v)
+	cfg["battery_capacity_mah"] = clampf(float(cfg["battery_capacity_mah"]), 50.0, 100000.0)
 	drones = {}
 	var overrides := ConfigFile.new()
 	for sec in c.get_sections():
 		if sec == "mod" or sec == "real_quad":
 			continue
-		var model := str(c.get_value(sec, "model", "auto")).strip_edges()
+		var d: Dictionary = DRONE_DEFAULTS.duplicate()
+		for k in d:
+			if c.has_section_key(sec, k):
+				d[k] = c.get_value(sec, k)
+		var model := str(d["model"]).strip_edges()
 		drones[sec] = {
 			"model": model,
-			"propwash": clampf(float(c.get_value(sec, "propwash", 1.0)), 0.0, 5.0),
-			"drag": clampf(float(c.get_value(sec, "drag", 0.0)), 0.0, 3.0),
-			"rates": "model" if str(c.get_value(sec, "rates", "game")).strip_edges() == "model" else "game",
+			"propwash": clampf(float(d["propwash"]), 0.0, 5.0),
+			"drag": clampf(float(d["drag"]), 0.0, 3.0),
+			"rates": "model" if str(d["rates"]).strip_edges() == "model" else "game",
 		}
 		if model == "off":
 			overrides.set_value("vehicle_models", sec, ModelRegistry.NONE)
@@ -109,33 +124,20 @@ func zm_restart_keys() -> PackedStringArray:
 	return PackedStringArray(["real_quad/unknown_game_version"])
 
 
-## Shown at the top of the mod's page in mod_settings: which model flies which drone right now
-## (so "auto" shows what it picked), or why the settings do nothing for now
+## Shown at the top of the mod's page in mod_settings: the model that flies the
+## drone flown right now (so "auto" shows what it picked), or why the settings
+## do nothing for now. mod_settings reads it again after each change
 func zm_settings_status() -> String:
 	if not on:
 		return "not in effect: " + (_why_not if _why_not != "" else "the game has not started it yet")
 	var gs := get_node_or_null("/root/ZGamestate")
-	var flying := str(gs.get("selected_vehicle_id")) if gs != null else ""
-	var vids := PackedStringArray(drones.keys())
-	if flying != "" and not vids.has(flying):
-		vids.append(flying)
-	var lines := PackedStringArray()
-	for vid in vids:
-		var mid := model_id_for(vid)
-		var what := "the game's physics"
-		if mid != "":
-			what = str(registry.get_entry(mid).get("name", mid))
-		if str(drone_cfg(vid)["model"]) == "auto":
-			what += " (auto)"
-		lines.append("%s%s: %s" % [_drone_name(vid), " (flying)" if vid == flying else "", what])
-	return "In use now - " + "; ".join(lines) + ". Changes take effect at once. A model's weight, thrust and top speed come from the model, not from the game's Physics menu."
-
-
-# the game's name of a drone, from mod_settings when it is there
-func _drone_name(vid: String) -> String:
-	var ms := get_node_or_null("/root/ZoneMods/mod_settings")
-	var n := str(ms.call("drone_name", vid)) if ms != null and ms.has_method("drone_name") else ""
-	return n if n != "" else vid
+	var vid := str(gs.get("selected_vehicle_id")) if gs != null and gs.get("selected_vehicle_id") != null else ""
+	if vid == "":
+		return "Flying now: no drone yet."
+	var mid := model_id_for(vid)
+	var how := str(drone_cfg(vid)["model"])
+	return "Flying now: %s%s. A model's weight, thrust and top speed come from the model, not from the game's Physics menu." % [
+		mid if mid != "" else "the game's physics", " (%s)" % how if how == "auto" or how == "off" else ""]
 
 
 func _scan_models() -> void:
@@ -159,7 +161,7 @@ func model_id_for(vehicle_id: String) -> String:
 ## The drone's own settings: propwash (1 = as calibrated), drag (0 = the package's own) and rates
 ## ("game" = the game's Rates menu, "model" = the package's)
 func drone_cfg(vehicle_id: String) -> Dictionary:
-	return drones.get(vehicle_id, {"model": "auto", "propwash": 1.0, "drag": 0.0, "rates": "game"})
+	return drones.get(vehicle_id, DRONE_DEFAULTS)
 
 
 ## dirty_air's air node (the air at the props: prop wash, floor and ceiling), or null
@@ -185,7 +187,7 @@ func battery_node() -> Node:
 func pack_spec(model: RefCounted) -> Dictionary:
 	var s: Dictionary = model.battery_spec()
 	if float(s["capacity_mah"]) <= 0.0:
-		s["capacity_mah"] = battery_capacity_mah
+		s["capacity_mah"] = float(cfg["battery_capacity_mah"])
 	return s
 
 
@@ -230,7 +232,7 @@ func flying(vehicle_id: String, model: RefCounted) -> void:
 		vehicle_id, model.get_display_name(), int(round(float(model.plant_params.mass) * 1000.0)), int(round(model.get_loop_hz())),
 		str(snappedf(float(s["drag"]) if float(s["drag"]) > 0.0 else model.get_package_linear_drag(), 0.01)),
 		("prop wash from dirty_air, wash %s and wake %s (calibrated x propwash %s)%s" % [str(snappedf(model.get_air_wash(), 0.01)),
-			str(snappedf(model.get_air_wake(), 0.01)), str(s["propwash"]), ", with its floor and ceiling effect" if ground_ceiling_effect else ""])
+			str(snappedf(model.get_air_wake(), 0.01)), str(s["propwash"]), ", with its floor and ceiling effect" if bool(cfg["ground_ceiling_effect"]) else ""])
 			if air != null else "no prop wash (dirty_air is not loaded: clean air)",
 		int(bat["cells"]), int(bat["capacity_mah"]),
 		" (NOT IN THE PACKAGE: battery_capacity_mah from settings.cfg)" if no_cap else "", float(bat["resistance_mohm"]),
@@ -289,7 +291,7 @@ func _coexistence(fc: bool) -> void:
 		lines.append("flight_controller: loaded but not in effect, so not used")
 	if air_node() != null:
 		lines.append("dirty_air: the prop wash of the modelled quads - its wake, gusts, descent curve and vortex ring state go into each prop of the model, with the wash and wake of the model's package"
-			+ ("; and its floor and ceiling effect" if ground_ceiling_effect else " (its floor and ceiling effect off: ground_ceiling_effect=false)") + "; it pushes and shakes only the other drones")
+			+ ("; and its floor and ceiling effect" if bool(cfg["ground_ceiling_effect"]) else " (its floor and ceiling effect off: ground_ceiling_effect=false)") + "; it pushes and shakes only the other drones")
 	else:
 		lines.append("dirty_air: not loaded, so the modelled quads fly without prop wash (clean air)")
 	if battery_node() != null:
@@ -303,7 +305,9 @@ func _coexistence(fc: bool) -> void:
 	var pd := props_node()
 	if pd != null:
 		if pd.has_method("set_model"):
-			lines.append("prop_damage: its worn props' thrust loss goes into each rotor of the modelled quad (a broken prop gives none), the props' out-of-balance becomes vibration in the gyro the Betaflight loop reads; hits, clips and kicks still push the quad, and it no longer pushes or shakes the model itself")
+			lines.append("prop_damage: its worn props' thrust loss goes into each rotor of the modelled quad (a broken prop gives none), "
+				+ "the props' out-of-balance becomes vibration in the gyro the Betaflight loop reads; hits, clips and kicks still push the quad, "
+				+ "and it no longer pushes or shakes the model itself")
 		else:
 			lines.append("prop_damage: too old for real_quad (no set_model()): a modelled quad's props stay new; its hits and kicks still push the quad")
 	elif _core.call("get_mod", "prop_damage") != null:
@@ -328,7 +332,7 @@ func _copy() -> String:
 	var md5 := FileAccess.get_md5(GAME)
 	if md5 in KNOWN_MD5:
 		_say("the game's player script is the one this was made for (md5 %s)" % md5)
-	elif unknown_game_version:
+	elif bool(cfg["unknown_game_version"]):
 		_say("the game's player script (md5 %s) is not the one this was made for: using it anyway (unknown_game_version=true)" % md5)
 	else:
 		return "the game was updated: its player script (md5 %s) is not the one this was made for (%s); set unknown_game_version=true in settings.cfg to try it anyway" % [md5, ", ".join(KNOWN_MD5)]

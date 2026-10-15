@@ -1,25 +1,25 @@
-# Physical model ("plant") of a quad: ESC/motors, battery, props, rigid body, air.
-# All parameters come from a JSON file identified from the quad's blackbox logs; see the keys
-# read in _init() for units. A Python reference implementation of the same equations exists and
-# is checked against this file sample by sample in clean air (not part of the mod package).
-#
-# The air: the plant has the prop's own axial inflow (climbing unloads the props, descending loads
-# them) and a weak calm-air turbulence. Prop wash - the wake the quad leaves behind, its gusts, the
-# descent curve and the vortex ring state - is dirty_air's: bf_model.apply_air() puts its air at each
-# prop into has_air / air_* below each physics tick. Without dirty_air the quad flies in clean air.
-#
-# Battery: the motors see v_batt = src_v - src_rp * current_proxy - src_ra * amps (model volts). By
-# default that is the identified sag of a fresh pack (battery_v0, battery_r times the identification's
-# current proxy); bf_model sets src_v / src_ra from the shared pack (battery_sag) each tick, src_rp
-# then 0. The electrical current is worked out from the rotors' mechanical power over the drive's
-# efficiency: amps = sum(kQ*load*w^3 + J*w*dw/dt, each >= 0) / (drive_efficiency * pack volts). (Not
-# from the motor model's terms: its fitted offset c makes their electrical power fall below the
-# mechanical one on some crafts.)
-#
-# Frames: body FLU (x forward, y left, z up) = the Betaflight gyro frame. World = Godot (y up).
-#   FLU -> Godot local: (x, y, z) -> (-y, z, -x);  Godot local -> FLU: (X, Y, Z) -> (-Z, -X, Y).
-# Motor order as in Betaflight: 0 rear-right, 1 front-right, 2 rear-left, 3 front-left.
 extends RefCounted
+## real_quad: the physical model ("plant") of a quad: ESC/motors, battery, props, rigid body, air.
+## All parameters come from a JSON file identified from the quad's blackbox logs; see the keys
+## read in _init() for units. A Python reference implementation of the same equations exists and
+## is checked against this file sample by sample in clean air (not part of the mod package).
+##
+## The air: the plant has the prop's own axial inflow (climbing unloads the props, descending loads
+## them) and a weak calm-air turbulence. Prop wash - the wake the quad leaves behind, its gusts, the
+## descent curve and the vortex ring state - is dirty_air's: bf_model.apply_air() puts its air at each
+## prop into has_air / air_* below each physics tick. Without dirty_air the quad flies in clean air.
+##
+## Battery: the motors see v_batt = src_v - src_rp * current_proxy - src_ra * amps (model volts). By
+## default that is the identified sag of a fresh pack (battery_v0, battery_r times the identification's
+## current proxy); bf_model sets src_v / src_ra from the shared pack (battery_sag) each tick, src_rp
+## then 0. The electrical current is worked out from the rotors' mechanical power over the drive's
+## efficiency: amps = sum(kQ*load*w^3 + J*w*dw/dt, each >= 0) / (drive_efficiency * pack volts). (Not
+## from the motor model's terms: its fitted offset c makes their electrical power fall below the
+## mechanical one on some crafts.)
+##
+## Frames: body FLU (x forward, y left, z up) = the Betaflight gyro frame. World = Godot (y up).
+##   FLU -> Godot local: (x, y, z) -> (-y, z, -x);  Godot local -> FLU: (X, Y, Z) -> (-Z, -X, Y).
+## Motor order as in Betaflight: 0 rear-right, 1 front-right, 2 rear-left, 3 front-left.
 
 const RHO := 1.225                   # air density [kg/m^3]
 const G := 9.81

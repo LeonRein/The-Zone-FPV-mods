@@ -84,7 +84,7 @@ func before_physics() -> void:
 		_vid = vid
 	if model != null:
 		_apply_game_settings()
-		model.apply_air(mod.air_node(), mod.ground_ceiling_effect)
+		model.apply_air(mod.air_node(), bool(mod.cfg["ground_ceiling_effect"]))
 		_apply_props()
 		_apply_battery(vid)
 

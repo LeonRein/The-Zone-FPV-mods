@@ -1,19 +1,19 @@
-# Registry of model packages (models/<id>/ with craft.json, fc.json, plant.json).
-#
-# Pure logic, no UI: scans one or more root folders for packages, lists them, finds the model for a
-# Zone vehicle id, keeps an optional override assignment vehicle -> model (persisted in a
-# ConfigFile section) and loads/caches BFModel instances. real_quad/main.gd fills the overrides
-# from settings.cfg.
-#
-#   var reg := ModelRegistry.new(["res://real_quad/models"])
-#   reg.scan()
-#   for e in reg.list_models(): print(e.id, e.name, e.zone_vehicle_id)
-#   reg.set_override("5in_freestyle", "my_other_5in")       # or ModelRegistry.NONE = original physics
-#   var m := reg.model_for_vehicle("5in_freestyle")          # BFModel or null (no model -> Zone physics)
-#
-# Roots are scanned in order; a package id found in a later root replaces the same id from an
-# earlier one (user packages override the built-in ones).
 extends RefCounted
+## real_quad: the registry of model packages (models/<id>/ with craft.json, fc.json, plant.json).
+##
+## Pure logic, no UI: scans one or more root folders for packages, lists them, finds the model for a
+## Zone vehicle id, keeps an optional override assignment vehicle -> model (persisted in a
+## ConfigFile section) and loads/caches BFModel instances. real_quad/main.gd fills the overrides
+## from settings.cfg.
+##
+##   var reg := ModelRegistry.new(["res://real_quad/models"])
+##   reg.scan()
+##   for e in reg.list_models(): print(e.id, e.name, e.zone_vehicle_id)
+##   reg.set_override("5in_freestyle", "my_other_5in")       # or ModelRegistry.NONE = original physics
+##   var m := reg.model_for_vehicle("5in_freestyle")          # BFModel or null (no model -> Zone physics)
+##
+## Roots are scanned in order; a package id found in a later root replaces the same id from an
+## earlier one (user packages override the built-in ones).
 
 const BFModel := preload("bf_model.gd")
 

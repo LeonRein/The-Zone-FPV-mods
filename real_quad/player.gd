@@ -8,31 +8,31 @@ extends "res://real_quad/base/player_rigid_body.gd"
 const ZM_REAL_QUAD := 1
 const Hook := preload("hook.gd")
 
-var rq = null            # hook.gd's Hook for this quad
+var zm_rq = null            # hook.gd's Hook for this quad
 
 
 func _ready() -> void:
 	var mod = Hook.find_mod(get_tree())
 	if mod != null:
-		rq = Hook.new(self, mod)
-		rq.ready()
+		zm_rq = Hook.new(self, mod)
+		zm_rq.ready()
 
 
 func _physics_process(delta: float) -> void:
-	if rq != null:
-		rq.before_physics()
+	if zm_rq != null:
+		zm_rq.before_physics()
 	super._physics_process(delta)      # the game: inputs, arming, OSD, sound, stats
-	if rq != null:
-		rq.after_physics()
+	if zm_rq != null:
+		zm_rq.after_physics()
 
 
 # the game's sound step, untyped as there
 func play_sound():
-	if rq != null:
-		rq.before_sound()
+	if zm_rq != null:
+		zm_rq.before_sound()
 	super.play_sound()
 
 
 func _integrate_forces(state: PhysicsDirectBodyState3D) -> void:
-	if rq != null:
-		rq.integrate_forces(state)
+	if zm_rq != null:
+		zm_rq.integrate_forces(state)
