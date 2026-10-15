@@ -179,6 +179,7 @@ func open() -> void:
 	_drones = host.game_drones() if host != null and host.has_method("game_drones") else []
 	_fill_drones()
 	visible = true
+	set_process(true)
 	_size()
 	_refresh()
 
@@ -651,10 +652,15 @@ func _on_progress(step: String, frac: float) -> void:
 
 
 func _process(_d: float) -> void:
+	# the game hides an idle cursor and shows it again only on mouse motion in its own window,
+	# which the file dialog (a window of its own) takes: keep it shown while this is open
+	if visible and Input.mouse_mode != Input.MOUSE_MODE_VISIBLE:
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	if hide_when_unpaused and visible and _was_paused and not _paused():
 		close()
 	if _thread == null:
-		set_process(false)
+		if not visible:
+			set_process(false)
 		return
 	_mutex.lock()
 	var done := _done
