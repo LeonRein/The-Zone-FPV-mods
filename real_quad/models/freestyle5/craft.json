@@ -10,7 +10,7 @@
     "lihv": false
   },
   "motor": {
-    "kv": 1960
+    "kv": 1855
   },
   "prop": {
     "diameter_in": 5.1,

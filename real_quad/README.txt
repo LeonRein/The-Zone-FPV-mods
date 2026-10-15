@@ -15,7 +15,7 @@ prop wash, floor and ceiling) and battery_sag (the pack that drains),
 whose work goes into the model.
 
 It comes with two models: freestyle5, a 5" freestyle quad (650 g, 2207
-1960KV motors, 51499 props, 6S 1500 mAh, 4 kHz loop) for the game's 5"
+1855KV motors, 51499 props, 6S 1500 mAh, 4 kHz loop) for the game's 5"
 Freestyle, and freestyle35, a 3.5" quad (300 g, 1604.5 3650KV motors, Gemfan
 3525 props, 4S 850 mAh, 8 kHz loop) for the game's 3.5" Freestyle. Each has
 the report of how it was worked out (report.md, in German).
