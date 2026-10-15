@@ -13,17 +13,23 @@ extends RefCounted
 ##   var m := reg.model_for_vehicle("5in_freestyle")          # BFModel or null (no model -> Zone physics)
 ##
 ## Roots are scanned in order; a package id found in a later root replaces the same id from an
-## earlier one (user packages override the built-in ones).
+## earlier one (user packages override the built-in ones). Each replacement is listed in `notes`.
+## A package whose craft.json "package_format" (absent = 1) is newer than FORMAT_MAX is not loaded
+## and shows in `errors`; the older package of that id, if any, stays.
 
 const BFModel := preload("bf_model.gd")
 
 const PACKAGE_FILES := ["craft.json", "fc.json", "plant.json"]
 ## Override value meaning "this vehicle keeps the original game physics".
 const NONE := "none"
+## The newest package format this reads (2 = made by the log fit; it only adds keys to format 1).
+const FORMAT_MAX := 2
 
 var roots: PackedStringArray = []
 ## Problems found by the last scan() ("<dir>: reason"), for a menu or the log.
 var errors: PackedStringArray = []
+## Things worth a line in the log that are not errors ("id: <dir> replaces <dir>"), by the last scan().
+var notes: PackedStringArray = []
 
 var _entries: Dictionary = {}        # id -> {id, name, zone_vehicle_id, dir, root, craft}
 var _overrides: Dictionary = {}      # zone vehicle id -> model id (or NONE)
@@ -47,6 +53,7 @@ func scan() -> int:
 	var old := _entries
 	_entries = {}
 	errors = PackedStringArray()
+	notes = PackedStringArray()
 	_failed.clear()
 	for root in roots:
 		var da := DirAccess.open(root)
@@ -75,6 +82,12 @@ func _register(root: String, dir: String, dir_name: String) -> void:
 	if id == "" or id == NONE:
 		errors.append("%s: invalid id '%s'" % [dir, id])
 		return
+	var format := int(craft.get("package_format", 1))
+	if format > FORMAT_MAX:
+		errors.append("%s: package_format %d is newer than this real_quad reads (%d), made by a newer real_quad" % [dir, format, FORMAT_MAX])
+		return
+	if _entries.has(id):
+		notes.append("%s: %s replaces %s" % [id, dir, _entries[id].dir])
 	_entries[id] = {
 		"id": id,
 		"name": str(craft.get("name", id)),

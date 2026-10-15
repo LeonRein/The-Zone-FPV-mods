@@ -112,7 +112,13 @@ MODELS
   used and status.txt says so.
 
   Any number of models can be there, for any drone; a folder dropped in is
-  found at the next start. settings.cfg says which flies which drone. The
+  found at the next start (or with Rescan models on the Mods page). Models you
+  make yourself are kept apart from the game folder, where updates leave
+  them alone: in the game's user folder, real_quad/models (the Mods page's
+  Build a model button names it). A model there with the id of one that
+  came with real_quad takes its place, and status.txt says so. A model
+  made by a newer real_quad (craft.json package_format above 2) is skipped,
+  and status.txt says so too. settings.cfg says which flies which drone. The
   loop rate comes from fc.json: 4000 Hz for freestyle5; a model with an
   8000 Hz loop works the same way.
 
@@ -222,6 +228,8 @@ SETTINGS
     - battery_capacity_mah: the pack size for a model whose package does not
       give it
     - unknown_game_version: see HOW IT WORKS
+    - model_builder: shows the Build a model button on the Mods page (not ready:
+      for now it only says so)
     - a section for each of the game's quads:
         model: "auto" (the model made for it, if any), "off" (the game's
           physics), or a model's name - any model on any drone

@@ -204,6 +204,21 @@ func _show(id: String) -> void:
 		_show(id))
 	tools.add_child(reset)
 	_body.add_child(tools)
+	var acts: Array = host.actions(id) if host.has_method("actions") else []
+	if not acts.is_empty():
+		var row := HFlowContainer.new()
+		row.name = "Actions"
+		for a in acts:
+			var b := Button.new()
+			b.name = str(a["method"]).validate_node_name()
+			b.text = a["label"]
+			b.tooltip_text = a["tip"]
+			var method: String = a["method"]
+			b.pressed.connect(func():
+				host.run_action(id, method)
+				_show(id))
+			row.add_child(b)
+		_body.add_child(row)
 	var vals: Dictionary = host.values(id)
 	var items: Array = host.model(id)
 	var run_of := {}              # a section's item index -> its run

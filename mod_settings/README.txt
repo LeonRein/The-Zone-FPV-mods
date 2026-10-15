@@ -81,6 +81,23 @@ FOR MOD MAKERS
   shown one at a time, picked from a list (named after the game's drones
   when they are drones, otherwise from the start of each section's note).
 
+  Two more small hooks, both optional. A mod that has something to do
+  rather than something to set can put buttons on its page, in a row under
+  the status line:
+      func zm_settings_actions() -> Array
+  returning items {label, method} (and a tip, if you like): each button
+  calls that method of the mod's main script, with no arguments, and the
+  page is drawn again afterwards, so a button can change what the page
+  lists. A method the script does not have is no button.
+  A string setting whose choices change while the game runs (real_quad's
+  models: the ones that came with it and the ones you made) is given its
+  list by
+      func zm_settings_choices(section: String, key: String) -> PackedStringArray
+  which is asked for every string setting of the page and answers an empty
+  list for those it knows nothing about. A list given this way is shown in
+  place of the quoted choices in the note; the value set in the file stays,
+  as the last entry, when it is not in the list.
+
   Settings kept in another .cfg file in the mod's folder can be shown on its
   page and written into that file, with
       func zm_settings_more() -> Array

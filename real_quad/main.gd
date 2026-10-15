@@ -32,11 +32,13 @@ const KNOWN_MD5 := ["b27ff67e1823e52bc519732313f06083"]
 const NEED_METHODS := ["_physics_process", "play_sound", "is_armed", "calc_motor_rpm", "_handle_rotation", "get_thrust_at_rpm"]
 const NEED_PROPERTIES := ["stick_pos", "turtle_mode_active", "current_motor_rpm", "_SETTINGS"]
 const ModelRegistry := preload("flightmodel/model_registry.gd")
+const USER_MODELS := "user://real_quad/models"   # the models you made; with the same id as a shipped one, yours flies
 
 const DEFAULTS := {
 	"ground_ceiling_effect": true,
 	"battery_capacity_mah": 1300.0,     # for a model package that does not say
 	"unknown_game_version": false,
+	"model_builder": false,
 }
 # What each drone's section sets (see settings.default.cfg)
 const DRONE_DEFAULTS := {"model": "auto", "propwash": 1.0, "drag": 0.0, "rates": "game"}
@@ -54,13 +56,14 @@ var _why_not := ""
 var _log := PackedStringArray()
 var _said := {}
 var model_roots := PackedStringArray()   # folders of model packages (a package each: craft.json, fc.json, plant.json)
+var _dialog: AcceptDialog = null
 
 
 func zm_init(core: Node, _dir: String) -> void:
 	_core = core
 	_say("real_quad %s" % VERSION)
 	# listed from the real folder: the game's own file list does not know a folder next to its exe
-	model_roots = PackedStringArray([_game_dir().path_join("models")])
+	model_roots = PackedStringArray([_game_dir().path_join("models"), USER_MODELS])
 	_scan_models()
 	read_settings()
 	_say("ground and ceiling effect %s, %d mAh for a model whose package gives no pack size" % [
@@ -140,6 +143,60 @@ func zm_settings_status() -> String:
 		mid if mid != "" else "the game's physics", " (%s)" % how if how == "auto" or how == "off" else ""]
 
 
+## Mod_settings' choices for a drone's "model": auto, off, then every model there is
+func zm_settings_choices(section: String, key: String) -> PackedStringArray:
+	if key != "model" or section == "real_quad" or registry == null:
+		return PackedStringArray()
+	var out := PackedStringArray(["auto", "off"])
+	for e in registry.list_models():
+		out.append(e.id)
+	return out
+
+
+## Buttons on the mod's page in mod_settings
+func zm_settings_actions() -> Array:
+	var out := []
+	if bool(cfg["model_builder"]):
+		out.append({"label": "Build a model from logs...", "method": "open_model_builder",
+			"tip": "Makes a flight model of your own quad from its Betaflight blackbox logs"})
+	out.append({"label": "Rescan models", "method": "rescan_models",
+		"tip": "Looks again in real_quad/models and in your own models folder"})
+	return out
+
+
+## Looks for the model packages again (after one was added or removed by hand)
+func rescan_models() -> void:
+	registry.scan()
+	generation += 1
+	_say("models rescanned: %d found" % registry.list_models().size())
+	for err in registry.errors:
+		_say("model package skipped: " + err)
+	for n in registry.notes:
+		_say("model package replaced: " + n)
+	_write_status()
+
+
+## Where the models you made are kept (user://real_quad/models), made when asked
+func user_models_dir(create := false) -> String:
+	if create:
+		DirAccess.make_dir_recursive_absolute(USER_MODELS)
+	return ProjectSettings.globalize_path(USER_MODELS)
+
+
+## For now only says what is coming; the window that builds a model from logs comes later
+func open_model_builder() -> void:
+	if _dialog == null or not is_instance_valid(_dialog):
+		_dialog = AcceptDialog.new()
+		_dialog.title = "Build a model from logs"
+		_dialog.process_mode = Node.PROCESS_MODE_ALWAYS
+		_dialog.dialog_autowrap = true
+		_dialog.dialog_text = "Not ready yet: this will make a flight model of your own quad from Betaflight blackbox logs, kept in\n%s" % user_models_dir()
+		add_child(_dialog)
+	var size := Vector2i(480, 160)
+	var view := Vector2i(get_viewport().get_visible_rect().size)
+	_dialog.popup(Rect2i(((view - size) / 2).max(Vector2i.ZERO), size))
+
+
 func _scan_models() -> void:
 	registry = ModelRegistry.new(model_roots)
 	registry.scan()
@@ -151,6 +208,8 @@ func _scan_models() -> void:
 	_say("models: " + (", ".join(names) if not names.is_empty() else "none"))
 	for err in registry.errors:
 		_say("model package skipped: " + err)
+	for n in registry.notes:
+		_say("model package replaced: " + n)
 
 
 ## The model package that should fly this drone, "" = the game's physics
