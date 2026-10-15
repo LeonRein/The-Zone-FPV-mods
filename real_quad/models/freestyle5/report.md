@@ -50,8 +50,9 @@ Form: 0.65 kg, 6S lipo, 1855 KV, prop 5.1" × 4.99" × 3, class five, top speed 
 |---|---|---|
 | Motor distance (arm) | 80 mm | 80 mm × D/5.1" (only the absolute inertias depend on it) |
 | Izz | 0.0029 kg·m² | 1.7 × mean roll/pitch inertia (only J_rotor/Izz is measured) |
-| dirty_air wash/wake/gust | 0.7/1.0/10.5 | not fitted in v1: five class |
-| Wake/turbulence/VRS | turb 0.31 / 3.8 m/s | reference scaled physically (Python plant only) |
+| dirty_air gust | 6.79 | prop wash calibration (real_quad calibrate.gd): drop and catch 14.71 deg/s (target 14.55) |
+| Calm-air turbulence | 0.249 m/s | prop wash calibration: calm hover 0.75 deg/s (target 0.75) |
+| dirty_air wash/wake | 1/1 | dirty_air's own figures |
 
 ## Plausibility vs. the five class band
 | Quantity | Value | Band | Result |
@@ -154,11 +155,16 @@ Used: rotor drag from the ACC fit (4.78e-05); body drag calibrated to the given 
 Top speed of the model (full throttle, level, fresh pack with sag): **165 km/h** at 82° tilt, 582 Hz rotor; given 165 km/h; with the default body drag it would be 157 km/h.
 
 ## Propwash / turbulence
-Log metric (15–78 Hz roll/pitch tracking error, deg/s, median): calm 0.75, after throttle chops 0.67, flips after chops 4.28; 99th percentile of all usable windows outside chirps 11.34 (windows (4125, 849, 96, 8325)). Target for the dirty_air calibration in Godot (p99 scaled to freestyle5 = 14.5 deg/s at 11.3).
-dirty_air wash/wake/gust 0.7/1.0/10.5 from the five class.
-Wake/turbulence amplitudes of the Python plant: reference values scaled with the induced velocity (factor 1): turb_base_ms 0.31, pw_turb_ms 3.8, wake_r0 0.12 m.
+Log metric (15–78 Hz roll/pitch tracking error, deg/s, median): calm 0.75, after throttle chops 0.67, flips after chops 4.28; 99th percentile of all usable windows outside chirps 11.34 (windows (4125, 849, 96, 8325)). The targets of the prop wash calibration (below).
+Wake/turbulence amplitudes of the Python plant (calm-air turbulence before the calibration): reference values scaled with the induced velocity (factor 1): turb_base_ms 0.31, pw_turb_ms 3.8, wake_r0 0.12 m.
 
 ## Validation
 Hover: motor command sim 0.238 / log 0.245, rotor 158 / 158 Hz (model voltage 23.85 V).
 Roll steps (12, stick replay through the Betaflight port + model): t90 sim 141.4 ms / log 141.4 ms, lag behind the setpoint (at 50 %) sim 4.0 ms / log 6.5 ms, gyro deviation sim−log 0.04 × log RMS (median).
 Events (session, time, plateau deg/s, t90 log/sim ms): m5_05_freestyle#1 18.24 s 700 189/192; m5_05_freestyle#1 22.13 s 700 127/123; btfl_012#1 44.13 s 700 177/182; btfl_012#1 68.07 s 700 108/102; m5_04_freestyle#1 53.09 s 700 100/98; m5_04_freestyle#1 60.1 s 700 150/151; m5_06_freestyle_abgeschnitten#1 23.79 s 700 125/130; m5_07_chirp9#1 11.25 s 700 133/132; m5_07_chirp9#1 31.31 s 700 105/103; m5_06_freestyle_abgeschnitten#1 13.81 s 662 230/246; btfl_011#1 71.94 s 633 357/359; btfl_011#1 8.63 s 621 219/218
+
+## Prop wash calibration
+- Prop wash calibrated: drop and catch 14.71 °/s (log 14.55), calm 0.75 °/s (log 0.75)
+- dirty_air 1.1, wash and wake 1 (its own figures); scenarios flown in its air without the game (no map, 60 m up), mean of 32 seeds, 5 runs, 11.5 s (real_quad logfit/fit/calibrate.gd; replaces the hand calibration).
+- Drop and catch: 0.9 s at zero throttle from a hover, caught at 45 %; its worst 0.25-s window against 1.283 × the logs' 99th percentile 11.34 (freestyle5's scale: 14.5 deg/s at 11.3).
+- Calm: 2 s of hover; its median 0.25-s window against the logs' calm median.
