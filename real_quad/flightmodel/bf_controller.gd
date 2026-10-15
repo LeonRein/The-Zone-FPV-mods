@@ -10,7 +10,9 @@ extends RefCounted
 ##
 ## Style note: the code deliberately stays close to the C source - same function boundaries, same
 ## variable names, filter states as flat packed arrays instead of filter objects - so every line
-## can be checked against the firmware, and to keep the 4 kHz loop cheap in GDScript. A Python
+## can be checked against the firmware, and to keep the 4 kHz loop cheap in GDScript. Where the loop
+## is hottest (the RPM notches, the PT3 smoothing of the RC input, the mixer) the loops are fused or
+## written out and the states are single variables, which gives the same numbers bit for bit. A Python
 ## reference implementation of the same port, validated open-loop against logged P/I/D/F terms,
 ## is compared with this file sample by sample (not part of the mod package).
 ##
