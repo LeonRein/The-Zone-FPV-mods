@@ -53,6 +53,7 @@ var _imb := PackedFloat64Array([0, 0, 0, 0])     # each prop's out-of-balance (p
 var _vib := PackedFloat64Array([0, 0, 0, 0])     # ... times its spin, this tick
 var _vib_phase := PackedFloat64Array([0, 0, 0, 0])
 var _vib_noise := Vector3()
+var _air_msg := {}                   # apply_air()'s message to dirty_air, the same dictionary every tick
 var _vib_on := false
 var _full_w := -1.0                  # quad.full_speed(), once worked out
 var _armed := false
@@ -240,6 +241,18 @@ func spin_share() -> PackedFloat64Array:
 	return out
 
 
+## spin_share() into an array of four floats (the hook hands the same one to prop_damage every tick)
+func spin_share_into(out: Array) -> void:
+	if _full_w < 0.0:
+		_full_w = maxf(quad.full_speed(), 1.0)
+	var k := 1.0 / (_full_w * _full_w)
+	var w := quad.w
+	out[0] = minf(w[0] * w[0] * k, 1.2)
+	out[1] = minf(w[1] * w[1] * k, 1.2)
+	out[2] = minf(w[2] * w[2] * k, 1.2)
+	out[3] = minf(w[3] * w[3] * k, 1.2)
+
+
 ## Propwash strength as a multiplier of the calibrated value (0 = off).
 func get_propwash_scale() -> float:
 	return propwash_scale
@@ -279,33 +292,47 @@ func apply_air(air: Object, ground_ceiling := true) -> void:
 		for i in 4:
 			quad.thrust_scale[i] = 1.0
 		return
-	var t := 0.0
-	for i in 4:
-		t += quad.thrust[i]
-	air.call("set_model", {
-		"thrust": t, "prop_mm": quad.prop_radius * 2000.0, "wheelbase_mm": quad.arm * 2.0 * sqrt(2.0) * 1000.0,
-		"ducted": bool(craft.get("ducted", false)), "wash": get_air_wash(), "wake": get_air_wake(), "gust": get_air_gust(),
-	})
+	var q := quad
+	var th := q.thrust
+	var m := _air_msg
+	m["thrust"] = th[0] + th[1] + th[2] + th[3]       # (summed in the rotors' order)
+	m["prop_mm"] = q.prop_radius * 2000.0
+	m["wheelbase_mm"] = q.arm * 2.0 * sqrt(2.0) * 1000.0
+	m["ducted"] = bool(craft.get("ducted", false))
+	m["wash"] = get_air_wash()
+	m["wake"] = get_air_wake()
+	m["gust"] = get_air_gust()
+	air.call("set_model", m)
 	var g = air.get("ground")
 	var c = air.get("ceiling")
-	var have_gc: bool = ground_ceiling and g is Array and c is Array and g.size() >= 4 and c.size() >= 4
-	for i in 4:
-		var k: int = DIRTY_AIR_PROP[i]
-		quad.thrust_scale[i] = float(g[k]) * float(c[k]) if have_gc else 1.0
+	var ts := q.thrust_scale
+	if ground_ceiling and g is Array and c is Array and g.size() >= 4 and c.size() >= 4:
+		ts[0] = float(g[3]) * float(c[3])       # (DIRTY_AIR_PROP: dirty_air's prop order is front left, front right, rear left, rear right)
+		ts[1] = float(g[1]) * float(c[1])
+		ts[2] = float(g[2]) * float(c[2])
+		ts[3] = float(g[0]) * float(c[0])
+	else:
+		ts.fill(1.0)
 	# its air for this tick, worked out for this model (not while disarmed or before its first tick)
 	if int(air.get("model_air_frame")) != Engine.get_physics_frames():
-		quad.clear_air()
+		q.clear_air()
 		air_wash_level = 0.0
 		return
-	quad.has_air = true
-	quad.air_vel = air.get("wake_flow")
-	quad.air_mean = float(air.get("descent_mean"))
+	q.has_air = true
+	q.air_vel = air.get("wake_flow")
+	q.air_mean = float(air.get("descent_mean"))
 	var ax: Array = air.get("prop_axial")
 	var fl: Array = air.get("prop_vrs")
-	for i in 4:
-		var k: int = DIRTY_AIR_PROP[i]
-		quad.air_axial[i] = float(ax[k])
-		quad.air_fluct[i] = float(fl[k])
+	var aa := q.air_axial
+	var af := q.air_fluct
+	aa[0] = float(ax[3])
+	aa[1] = float(ax[1])
+	aa[2] = float(ax[2])
+	aa[3] = float(ax[0])
+	af[0] = float(fl[3])
+	af[1] = float(fl[1])
+	af[2] = float(fl[2])
+	af[3] = float(fl[0])
 	air_wash_level = float(air.get("wash_level"))
 
 
