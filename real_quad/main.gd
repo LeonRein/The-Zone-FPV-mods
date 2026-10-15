@@ -241,7 +241,7 @@ func models_changed(id := "") -> void:
 
 func _job_finished(rec: Dictionary) -> void:
 	_say(ModelManager.notice_text(rec))
-	_show_toast(ModelManager.notice_text(rec))
+	_show_toast(ModelManager.notice_text(rec), bool(rec.get("ok", false)) or bool(rec.get("cancelled", false)))
 
 
 func _process(_d: float) -> void:
@@ -252,7 +252,7 @@ func _process(_d: float) -> void:
 
 
 ## A short message in the corner of the screen (a job finished)
-func _show_toast(text: String) -> void:
+func _show_toast(text: String, good := true) -> void:
 	if _toast == null or not is_instance_valid(_toast):
 		var layer := CanvasLayer.new()
 		layer.name = "ModelToast"
@@ -267,8 +267,9 @@ func _show_toast(text: String) -> void:
 		_toast.add_theme_constant_override("outline_size", 6)
 		layer.add_child(_toast)
 	_toast.text = text
+	_toast.add_theme_color_override("font_color", Color(0.55, 0.9, 0.55) if good else Color(1.0, 0.45, 0.4))
 	_toast.get_parent().visible = true
-	_toast_until = Time.get_ticks_msec() + 8000
+	_toast_until = Time.get_ticks_msec() + (8000 if good else 15000)
 
 
 ## The game's drones for the builder's lists: [{id, name}], then the ones settings.cfg has a section for

@@ -83,6 +83,7 @@ var stage := "overview"               # overview | new | detail
 var detail_id := ""
 var detail := {}                      # manager.details(detail_id)
 var pend_add := PackedStringArray()   # logs to add to the model in the detail page
+var skipped := PackedStringArray()    # picked files that are not blackbox logs (left out, named once)
 var pend_rm := {}                     # stored log name -> true: to remove
 
 var _logfit = null
@@ -776,11 +777,29 @@ func _remember_dir(picked: PackedStringArray) -> void:
 	c.save(cfg_path)
 
 
+## True for a Betaflight blackbox log: its first header line is in the first kilobytes (a .txt
+## next to the logs may be a CLI dump or notes, which is left out instead of failing the build)
+static func is_blackbox_log(path: String) -> bool:
+	var f := FileAccess.open(path, FileAccess.READ)
+	if f == null:
+		return false
+	var head := f.get_buffer(mini(f.get_length(), 16384)).get_string_from_ascii()
+	return head.contains("H Product:Blackbox flight data recorder")
+
+
+func _skipped_note() -> Control:
+	return _label("Not blackbox logs, left out: %s" % ", ".join(skipped), 1.0, WARN)
+
+
 ## Adds logs to the new model's list (a file already there is not added twice) and reads them
 func add_files(picked: PackedStringArray) -> void:
 	var added := false
+	skipped = PackedStringArray()
 	for p in picked:
 		if p.get_extension().to_lower() in EXTS and not p in paths:
+			if not is_blackbox_log(p):
+				skipped.append(p.get_file())
+				continue
 			paths.append(p)
 			added = true
 	_remember_dir(picked)
@@ -998,6 +1017,8 @@ func _refresh() -> void:
 		_fill_drones()
 	_clear(_files_box)
 	_clear(_msgs)
+	if not skipped.is_empty():
+		_msgs.add_child(_skipped_note())
 	if not available():
 		_msgs.add_child(_label("The model builder is not installed completely: real_quad/logfit/logfit.gd is missing. Update the mod.", 1.0, BAD))
 	if paths.is_empty():
@@ -1354,7 +1375,13 @@ func _fill_job_banner() -> void:
 	_clear(_d_job)
 	_d_step = null
 	_d_bar = null
-	if mm == null or not mm.busy():
+	if mm == null:
+		return
+	if not mm.busy():
+		# a build of this model that failed: say so here, where the rebuild was started
+		var rec: Dictionary = mm.last
+		if not rec.is_empty() and str(rec.get("id", "")) == detail_id and not bool(rec.get("ok", false)) and not bool(rec.get("cancelled", false)):
+			_d_job.add_child(_last_card())
 		return
 	var c: Dictionary = mm.current()
 	var card := _card()
@@ -1508,6 +1535,8 @@ func _fill_logs() -> void:
 		return
 	var stored: Array = (d.logs as Array).filter(func(l): return bool(l.stored))
 	_d_logs.add_child(_note("The logs are kept in the model's folder (logs/), so it can be rebuilt without the originals. Add or remove logs, then rebuild. Identical files are kept once."))
+	if not skipped.is_empty():
+		_d_logs.add_child(_skipped_note())
 	if not bool(d.inputs_known) or (stored.is_empty() and not (d.logs as Array).is_empty()):
 		var names := ", ".join(PackedStringArray((d.logs as Array).map(func(l): return str(l.name))))
 		_d_logs.add_child(_label("%s. This model was built before the logs were kept with it%s." % [INPUTS_UNKNOWN, " (from %d files: %s)" % [d.logs.size(), names] if not (d.logs as Array).is_empty() else ""], 1.0, WARN))
@@ -1567,8 +1596,12 @@ func drop_added(p: String) -> void:
 
 ## Logs to add to the model in the detail page
 func add_detail_logs(picked: PackedStringArray) -> void:
+	skipped = PackedStringArray()
 	for p in picked:
 		if p.get_extension().to_lower() in EXTS and not p in pend_add:
+			if not is_blackbox_log(p):
+				skipped.append(p.get_file())
+				continue
 			pend_add.append(p)
 	_remember_dir(picked)
 	_fill_logs()
