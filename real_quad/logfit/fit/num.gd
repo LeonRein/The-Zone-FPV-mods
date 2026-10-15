@@ -179,7 +179,7 @@ static func percentile_sorted(s: PackedFloat64Array, q: float) -> float:
 	if n == 0:
 		return NAN
 	var vi := q / 100.0 * (n - 1)
-	var lo := int(floor(vi))
+	var lo := int(floorf(vi))
 	var hi := mini(lo + 1, n - 1)
 	var g := vi - lo
 	var a := s[lo]
@@ -197,13 +197,13 @@ static func max_abs(x: PackedFloat64Array) -> float:
 	return m
 
 
-## Python's round(x, nd): halves to even.
+## Python's roundf(x, nd): halves to even.
 static func pyround(x: float, nd: int = 0) -> float:
 	var p := pow(10.0, nd)
 	var y := x * p
-	var r := round(y)
-	if absf(y - floor(y) - 0.5) == 0.0:
-		r = 2.0 * round(y / 2.0)
+	var r := roundf(y)
+	if absf(y - floorf(y) - 0.5) == 0.0:
+		r = 2.0 * roundf(y / 2.0)
 	return r / p if nd > 0 else r
 
 
@@ -218,7 +218,7 @@ static func floor_div(a: float, b: float) -> float:
 	if m != 0.0 and ((b < 0.0) != (m < 0.0)):
 		div -= 1.0
 	if div != 0.0:
-		var fl := floor(div)
+		var fl := floorf(div)
 		if div - fl > 0.5:
 			fl += 1.0
 		return fl
