@@ -265,8 +265,8 @@ func set_propwash_scale(v: float) -> void:
 
 
 # ------------------------------------------------------------------ air (dirty_air)
-## dirty_air's wash and wake for this quad, calibrated on its logs (plant.json dirty_air_wash /
-## dirty_air_wake; 1 = dirty_air's own figures), times the drone's propwash setting: wash sizes
+## dirty_air's wash and wake for this quad (plant.json dirty_air_wash / dirty_air_wake; 1 = dirty_air's own
+## figures, what the log fit's calibration uses), times the drone's propwash setting: wash sizes
 ## each prop's thrust fluctuation in the ring state (and the gusts), wake the air left behind.
 func get_air_wash() -> float:
 	return float(plant_params.get("dirty_air_wash", 1.0)) * propwash_scale
@@ -277,7 +277,7 @@ func get_air_wake() -> float:
 
 
 ## The turbulence of dirty_air's old wake for this quad, as a multiple of its own (plant.json
-## dirty_air_gust; not scaled by propwash, which scales it through the wash and wake already).
+## dirty_air_gust, calibrated on its logs: logfit/fit/calibrate.gd; not scaled by propwash, which scales it through the wash and wake already).
 func get_air_gust() -> float:
 	return float(plant_params.get("dirty_air_gust", 1.0))
 

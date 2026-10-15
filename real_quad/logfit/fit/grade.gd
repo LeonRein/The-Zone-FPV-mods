@@ -176,3 +176,16 @@ static func fly_next(cov: Dictionary, cls: String, pid_khz: float, log_rate_ok: 
 	if cov.roll_events < 3:
 		items.append("1-2 min of normal flying with fast roll flips (full roll stick and back)")
 	return [items, cli]
+
+
+## What to fly for the prop wash calibration (contract 4.1): calm hovers, drops and catches (the counts of
+## calibrate.gd's minimums)
+static func propwash_fly(pw: Dictionary) -> Array:
+	var n: Array = pw.get("n", [0, 0, 0, 0])
+	var items: Array = []
+	if int(n[0]) < 20:
+		items.append("Calm hover for the prop wash: 10 s at hover throttle with the sticks still, in calm air")
+	if int(n[1]) < 10:
+		items.append("Drops and catches for the prop wash: 5 times throttle to zero for about a second, then catch at mid throttle")
+	return items
+

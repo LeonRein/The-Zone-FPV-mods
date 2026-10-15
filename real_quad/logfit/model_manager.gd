@@ -6,6 +6,8 @@ extends RefCounted
 ##   mm.list()                       # [{id, name, origin shipped|user, grade, drones [{id, name}], bytes, inputs, ...}]
 ##   mm.details(id)                  # + report_md, form (the window's form), logs [{name, size, sha256, stored}]
 ##   mm.start({id, form, add: [paths], keep: [names] | null, new: bool}) -> "" or why not
+##   mm.recalibrate(id) -> "" or why not  # only the prop wash calibration (a job as a build; details(id).propwash
+##                                         # {recalibrate, why, text} says when it is due: another dirty_air installed)
 ##   mm.poll()                       # main thread, each frame while busy(): collects a finished job (rescans the models)
 ##   mm.status()                     # "Building <name>: <step> 45 %" while a job runs, else "" (mod_settings' line)
 ##   mm.duplicate(id) / mm.delete(id) / mm.apply_meta(id, name, drone)
@@ -24,6 +26,7 @@ const LOGFIT := "res://real_quad/logfit/logfit.gd"
 const LOG_EXTS := ["bbl", "bfl", "txt"]
 const INPUTS := "inputs.json"
 const GRADE_RE := "^## Grade ([A-D])"
+const CALIBRATE := "res://real_quad/logfit/fit/calibrate.gd"
 
 var host = null                      # real_quad's main.gd
 var root := "user://real_quad/models"
@@ -39,6 +42,7 @@ class Job:
 	var id := ""
 	var name := ""
 	var new_model := false
+	var recal := false                # only the prop wash calibration
 	var step := "Starting"
 	var frac := 0.0
 	var t0 := 0
@@ -257,7 +261,24 @@ func details(id: String) -> Dictionary:
 			logs.append({"name": str(f.get("name", "")), "size": int(f.get("size", 0)), "sha256": str(f.get("sha256", "")), "stored": false})
 	r["logs"] = logs
 	r["logs_bytes"] = dir_bytes(dir.path_join("logs"))
+	r["propwash"] = propwash_state(dir, str(r.origin), lf)
 	return r
+
+
+## The prop wash calibration of the package in dir: {text (the report's line), recalibrate (offer the button),
+## why}; only an own model with a log metric can be recalibrated
+func propwash_state(dir: String, org: String, lf: Dictionary) -> Dictionary:
+	var plant := read_json(dir.path_join("plant.json"))
+	var out := {"text": "", "recalibrate": false, "why": ""}
+	if not (FileAccess.file_exists(CALIBRATE) or ResourceLoader.exists(CALIBRATE)):
+		return out
+	var Cal: Script = load(CALIBRATE)
+	if plant.get("dirty_air_calibration") is Dictionary:
+		out.text = Cal.summary(plant.dirty_air_calibration)
+	var st: Dictionary = Cal.stale(plant)
+	out.why = st.why
+	out.recalibrate = st.recalibrate and org == "user" and lf.get("propwash") is Dictionary
+	return out
 
 
 ## The window's form from a craft.json-layout dictionary (craft.json, or logfit.json's form); keys that
@@ -314,26 +335,31 @@ func busy() -> bool:
 	return _job != null
 
 
-## The model being built right now: {id, name, step, frac, elapsed_s, new, cancelling} or {}
+## The model being built right now: {id, name, step, frac, elapsed_s, new, cancelling, recal} or {}
 func current() -> Dictionary:
 	if _job == null:
 		return {}
 	var s := _job.snapshot()
 	return {"id": _job.id, "name": _job.name, "step": s.step, "frac": s.frac, "elapsed_s": (Time.get_ticks_msec() - _job.t0) / 1000,
-		"new": _job.new_model, "cancelling": _job.cancelled}
+		"new": _job.new_model, "cancelling": _job.cancelled, "recal": _job.recal}
 
 
 ## mod_settings' line: "Building <name>: <step> 45 %", else how the last job went for a while, else ""
 func status() -> String:
 	if _job != null:
 		var c := current()
-		return "Building %s: %s %d %%%s" % [c.name, c.step, int(round(float(c.frac) * 100.0)), " (cancelling)" if c.cancelling else ""]
+		return "%s %s: %s %d %%%s" % ["Recalibrating" if c.recal else "Building", c.name, c.step, int(round(float(c.frac) * 100.0)), " (cancelling)" if c.cancelling else ""]
 	if not last.is_empty() and Time.get_ticks_msec() < notice_until_ms:
 		return notice_text(last)
 	return ""
 
 
 static func notice_text(rec: Dictionary) -> String:
+	if bool(rec.get("recal", false)):
+		if bool(rec.get("cancelled", false)):
+			return "Recalibrating the prop wash of %s was cancelled." % rec.name
+		if bool(rec.get("ok", false)):
+			return "%s: %s." % [rec.name, rec.get("text", "prop wash recalibrated")]
 	if bool(rec.get("cancelled", false)):
 		return "Building %s was cancelled." % rec.name
 	if bool(rec.get("ok", false)):
@@ -401,6 +427,40 @@ func start(spec: Dictionary) -> String:
 	job.thread = Thread.new()
 	job.thread.start(func():
 		var r := me._run(job, id, form, add, keep, old_logs, old_dir, is_new)
+		job.mutex.lock()
+		job.result = r
+		job.done = true
+		job.mutex.unlock(), Thread.PRIORITY_LOW)
+	return ""
+
+
+## Starts a job that runs only the prop wash calibration of an own model (logfit.recalibrate()): its
+## plant.json and report change in place, nothing else. "" = started, else why not.
+func recalibrate(id: String) -> String:
+	if _job != null:
+		var c := current()
+		return "%s is being built (%s, %d %%): wait for it to finish, or cancel it first." % [c.name, c.step, int(round(float(c.frac) * 100.0))]
+	if not available():
+		return "The model builder is not installed completely: real_quad/logfit/logfit.gd is missing. Update the mod."
+	if origin(id) != "user":
+		return "Only your own models can be recalibrated."
+	var lf = _script().new()
+	if not lf.has_method("recalibrate"):
+		return "The model builder is too old to recalibrate: update the mod."
+	var dir := model_dir(id)
+	_job = Job.new()
+	_job.id = id
+	_job.name = str(read_json(dir.path_join("craft.json")).get("name", id))
+	_job.recal = true
+	_job.t0 = Time.get_ticks_msec()
+	_job.logfit = lf
+	last = {}
+	var job := _job
+	job.thread = Thread.new()
+	job.thread.start(func():
+		var r: Dictionary = job.logfit.recalibrate(dir, func(s: String, f: float): job.progress(s, f))
+		if job.cancelled:
+			r["cancelled"] = true
 		job.mutex.lock()
 		job.result = r
 		job.done = true
@@ -534,7 +594,8 @@ func poll() -> bool:
 	var r: Dictionary = job.result
 	var rec := {"id": job.id, "name": job.name, "new": job.new_model, "ok": bool(r.get("ok", false)), "grade": str(r.get("grade", "")),
 		"cancelled": bool(r.get("cancelled", false)) or (job.cancelled and not bool(r.get("ok", false))), "errors": r.get("errors", []),
-		"warnings": r.get("warnings", []), "notes": r.get("notes", []), "elapsed_s": (Time.get_ticks_msec() - job.t0) / 1000.0}
+		"warnings": r.get("warnings", []), "notes": r.get("notes", []), "elapsed_s": (Time.get_ticks_msec() - job.t0) / 1000.0,
+		"recal": job.recal, "text": str(r.get("text", ""))}
 	last = rec
 	notice_until_ms = Time.get_ticks_msec() + 60000
 	if host != null and host.has_method("models_changed"):

@@ -218,6 +218,42 @@ func model_flown() -> bool:
 	return Engine.get_physics_frames() - _model_frame <= 1
 
 
+## Away from the game - no scene tree, no physics space, on any thread:
+## a flight model can fly a made-up flight through this air on its own
+## (real_quad's model builder does, to size its prop wash on the pilot's
+## logs). free_start() takes the model's message as set_model() does
+## (prop_mm, wheelbase_mm, ducted, wash, wake, gust) and a seed, with this
+## mod's own figures (not settings.cfg's) and no wake yet; then each tick
+## free_tick() takes the message again (thrust) and where the quad is and
+## how fast it flies, and works out its air for the next tick as for a
+## model flown in the game (descent_mean, prop_axial, prop_vrs, wake_flow,
+## wash_level) - high in the open: no floor, no ceiling, wind only if given.
+## Not for a node in the game's tree.
+func free_start(m: Dictionary, rng_seed: int) -> void:
+	cfg = DEFAULTS.duplicate()
+	_rng.seed = rng_seed
+	_model = m
+	drone = {"name": "model", "prop_mm": m.get("prop_mm", 127.0), "wheelbase_mm": m.get("wheelbase_mm", 220.0),
+		"ducted": bool(m.get("ducted", false))}
+	_geometry()
+	clear_wake()
+	_flying = false
+	_x = 0.0
+	_clock = 0.0
+	_tick = 0
+	_noise = [0.0, 0.0, 0.0, 0.0]
+	_tilt = Vector2.ZERO
+	_gust = [0.0, 0.0, 0.0, 0.0]
+	_gust_all = 0.0
+
+
+func free_tick(m: Dictionary, gt: Transform3D, lv: Vector3, dt: float, wind := Vector3.ZERO) -> void:
+	_model = m
+	_clock += dt
+	_tick += 1
+	_air_at(gt, lv, wind, maxf(float(m.get("thrust", 0.0)), 0.0), dt, true, null)
+
+
 ## The drone flown: the drones mod's figures for it (an added drone's from
 ## its block, the rest from the drone it is built on), with a flight
 ## model's props and frame in place of them while one flies it
@@ -234,13 +270,18 @@ func use_drone(vehicle_id: String) -> void:
 		_geom_prop = _model.get("prop_mm", "")
 		_geom_wheelbase = _model.get("wheelbase_mm", "")
 		_geom_ducted = _model.get("ducted", "")
+	_geometry()
+	clear_wake()
+
+
+## The props and frame of drone
+func _geometry() -> void:
 	_r = clampf(float(drone["prop_mm"]), 10.0, 400.0) / 2000.0
 	_area = 4.0 * PI * _r * _r
 	var s := clampf(float(drone["wheelbase_mm"]), 20.0, 1000.0) / 1000.0 / (2.0 * sqrt(2.0))
 	# quad X, forward is -z
 	_local = [Vector3(-s, 0, -s), Vector3(s, 0, -s), Vector3(-s, 0, s), Vector3(s, 0, s)]
 	_frame = s * sqrt(2.0) + _r
-	clear_wake()
 
 
 ## _geom_key() == _model_geom, without making the text when what it is made of is as it was
@@ -500,10 +541,18 @@ func _physics_process(dt: float) -> void:
 		return
 	var thrust := maxf(float(_model.get("thrust", 0.0)), 0.0) if ext \
 		else maxf(float(p.call("get_thrust_at_rpm", float(p.get("current_motor_rpm")))), 0.0)
-	var basis := gt.basis
-	var up := basis.y.normalized()
 	var wind = gs.get("current_wind_effect") if gs != null else null
 	var windv: Vector3 = wind if wind is Vector3 else Vector3.ZERO
+	_air_at(gt, lv, windv, thrust, dt, ext, body)
+
+
+## The air for one tick of an armed quad at gt flying at lv with this thrust: for a flight model (ext)
+## into descent_mean, prop_axial, prop_vrs, ..., else as forces on body. Without a body (free_tick())
+## there is no floor or ceiling.
+func _air_at(gt: Transform3D, lv: Vector3, windv: Vector3, thrust: float, dt: float, ext: bool, body: RigidBody3D) -> void:
+	var origin := gt.origin
+	var basis := gt.basis
+	var up := basis.y.normalized()
 	var air: Vector3 = lv - windv
 	var vh := sqrt(maxf(thrust, 1e-4) / (2.0 * RHO * _area))
 
@@ -578,15 +627,16 @@ func _physics_process(dt: float) -> void:
 	var ge := float(cfg["ground_effect"])
 	var ce := float(cfg["ceiling_effect"])
 	var fade := 1.0 / (1.0 + pow(air.length() / vh, 2.0))
-	var space := body.get_world_3d().direct_space_state if body.get_world_3d() != null else null
-	if _ray == null:
-		_ray = PhysicsRayQueryParameters3D.new()
-	var rid := body.get_rid()
-	if rid != _ray_rid:
-		_ray_rid = rid
-		_ray.exclude = [rid]
-		if _probe != null:
-			_probe.exclude = [rid]
+	var space := body.get_world_3d().direct_space_state if body != null and body.get_world_3d() != null else null
+	if body != null:
+		if _ray == null:
+			_ray = PhysicsRayQueryParameters3D.new()
+		var rid := body.get_rid()
+		if rid != _ray_rid:
+			_ray_rid = rid
+			_ray.exclude = [rid]
+			if _probe != null:
+				_probe.exclude = [rid]
 	# nothing within reach of any of the rays (a sphere round all of them): none of them hits, and
 	# eight rays are dearer than this one look
 	var rays := space != null and (ge > 0.0 or ce > 0.0) and _anything_near(space, origin)
@@ -658,7 +708,8 @@ func _physics_process(dt: float) -> void:
 	# variance, sized by how deep in the wake the quad is (none for a flight
 	# model: its own flight controller shakes)
 	if ext:
-		_unshake(body)
+		if body != null:
+			_unshake(body)
 		return
 	var amp := deg_to_rad(SHAKE_DEG) * wake * float(cfg["shake"])
 	var w0 := TAU * SHAKE_HZ

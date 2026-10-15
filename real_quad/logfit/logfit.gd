@@ -10,8 +10,13 @@ extends RefCounted
 ##        craft_name, pack_type}, errors, warnings, armed_s, chirp_s, files}
 ##   var res: Dictionary = lf.build(paths, form, out_dir, progress)
 ##       {ok, grade, errors, warnings, report_md, package_dir, model_id} (+ grade_meaning, fly_next,
-##        cli, banners, runtime_s)
+##        cli, banners, runtime_s, propwash_calibration: the prop wash line of the report)
 ##   lf.cancel()                    # from any thread: build() returns within about a second, writes nothing
+##   var r: Dictionary = lf.recalibrate(package_dir, progress)
+##       only the prop wash calibration (fit/calibrate.gd) of a built package, with the installed dirty_air and
+##       the log metric in its logfit.json: {ok, text (the summary line), errors}; rewrites plant.json and the
+##       report's calibration lines, nothing else (cancelled or failed: nothing)
+##   Calibrate.stale(plant)         # {recalibrate, why}: the installed dirty_air is not the one it was calibrated with
 ##
 ## form (the window's, logfit/window.gd): name, weight_g, cells, pack_type (lipo | lihv | liion), kv,
 ## class, zone_vehicle_id and optionally capacity_mah, prop_in, pitch_in, blades, wheelbase_mm,
@@ -25,10 +30,12 @@ extends RefCounted
 ## progress.call(step_name: String, fraction: float) runs on the worker thread.
 
 const Build := preload("fit/build.gd")
+const Calibrate := preload("fit/calibrate.gd")
 const Scan := preload("fit/scan.gd")
 const Craft := preload("fit/craft.gd")
 
 var _job: Build = null
+var _cal: Calibrate = null
 var _cancel := false
 var _mutex := Mutex.new()
 
@@ -38,6 +45,8 @@ func cancel() -> void:
 	_cancel = true
 	if _job != null:
 		_job.cancel()
+	if _cal != null:
+		_cal.cancel()
 	_mutex.unlock()
 
 
@@ -82,7 +91,7 @@ func build(paths: PackedStringArray, form: Dictionary, out_dir: String, progress
 		warns.push_front({"text": b, "fix": "", "big": true, "overridable": false, "code": "banner", "level": "warning"})
 	var out := {"ok": bool(r.ok), "grade": r.get("grade", ""), "errors": r.errors.map(func(e): return message(e)), "warnings": warns,
 		"report_md": r.get("report_md", ""), "package_dir": r.get("package_dir", "") if r.ok else "", "model_id": str(r.get("model_id", c.get("id", "")))}
-	for k in ["grade_meaning", "fly_next", "cli", "runtime_s"]:
+	for k in ["grade_meaning", "fly_next", "cli", "runtime_s", "propwash_calibration"]:
 		if r.has(k):
 			out[k] = r[k]
 	return out
@@ -142,3 +151,54 @@ static func craft_from_form(form: Dictionary) -> Dictionary:
 	if form.get("zone_vehicle_id") != null and str(form.zone_vehicle_id) != "":
 		c.zone_vehicle_id = str(form.zone_vehicle_id)
 	return c
+
+
+## Only the prop wash calibration of the package in dir (its logfit.json's log metric, the installed
+## dirty_air): plant.json gets the new values and record, report.md its new calibration lines.
+## progress.call(step_name, fraction). {ok, text, errors: [message]}
+func recalibrate(dir: String, progress: Callable = Callable()) -> Dictionary:
+	var fail := func(text: String, fix: String = "") -> Dictionary:
+		return {"ok": false, "text": "", "errors": [{"text": text, "fix": fix, "big": false, "overridable": false, "code": "recalibrate", "level": "error"}]}
+	var rd := func(n: String) -> Dictionary:
+		var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(dir.path_join(n))) if FileAccess.file_exists(dir.path_join(n)) else null
+		return d if d is Dictionary else {}
+	var craft: Dictionary = rd.call("craft.json")
+	var fc: Dictionary = rd.call("fc.json")
+	var plant: Dictionary = rd.call("plant.json")
+	var lf: Dictionary = rd.call("logfit.json")
+	if craft.is_empty() or fc.is_empty() or plant.is_empty():
+		return fail.call("The model's package is incomplete (craft.json, fc.json, plant.json).")
+	if not (lf.get("propwash") is Dictionary):
+		return fail.call("The model has no log metric for the prop wash (logfit.json).", "rebuild the model from its logs")
+	_mutex.lock()
+	_cancel = false
+	_cal = Calibrate.new()
+	var cal := _cal
+	_mutex.unlock()
+	cal.progress = func(fr: float) -> void:
+		if progress.is_valid():
+			progress.call("Prop wash calibration", fr)
+	var rec := cal.run(craft, fc, plant, lf.propwash)
+	_mutex.lock()
+	_cal = null
+	_mutex.unlock()
+	if _cancel:
+		return fail.call("Cancelled.")
+	Calibrate.apply(plant, rec)
+	var tmp := dir.path_join("plant.json.new")
+	var f := FileAccess.open(tmp, FileAccess.WRITE)
+	if f == null:
+		return fail.call("Cannot write %s." % tmp)
+	f.store_string(JSON.stringify(plant, " ", false, true) + "\n")
+	f.close()
+	if DirAccess.rename_absolute(tmp, dir.path_join("plant.json")) != OK:
+		DirAccess.remove_absolute(tmp)
+		return fail.call("Cannot replace plant.json in %s." % dir)
+	var md := FileAccess.get_file_as_string(dir.path_join("report.md"))
+	if md != "":
+		var fm := FileAccess.open(dir.path_join("report.md"), FileAccess.WRITE)
+		if fm != null:
+			fm.store_string(Calibrate.report_md(md, rec))
+			fm.close()
+	return {"ok": true, "text": Calibrate.summary(rec), "errors": [], "record": rec}
+
