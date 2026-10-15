@@ -29,7 +29,6 @@ const GOOD := Color(0.55, 0.9, 0.55)
 const BAD := Color(1.0, 0.45, 0.4)
 const GROUP := Color(0.75, 0.85, 1.0)
 const _MM := preload("model_manager.gd")
-const FilePicker := preload("file_picker.gd")
 const LOGFIT := "res://real_quad/logfit/logfit.gd"
 const CFG := "user://real_quad/logfit.cfg"
 const EXTS := ["bbl", "bfl", "txt"]
@@ -100,7 +99,7 @@ var _errs := {}                       # form key -> its error label
 var _mode := "new"                    # what the form is for: new | edit
 var _baseline := {}                   # the form as the detail page loaded it
 var _drones: Array = []               # [{id, name}]
-var _dialog = null                    # the file picker, made on first use
+var _dialog: FileDialog = null
 var _pick_for := "new"
 var _box: PanelContainer = null
 var _title: Label = null
@@ -745,15 +744,22 @@ func _pick_drone(id: String, touched: bool) -> void:
 func _pick_files(target: String) -> void:
 	_pick_for = target
 	if _dialog == null:
-		# the engine's FileDialog is a window of its own here (see file_picker.gd): this one is a Control
-		_dialog = FilePicker.new()
-		_dialog.name = "FilePicker"
+		_dialog = FileDialog.new()
+		_dialog.name = "FileDialog"
+		_dialog.process_mode = Node.PROCESS_MODE_ALWAYS
+		_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILES
+		_dialog.access = FileDialog.ACCESS_FILESYSTEM
+		_dialog.use_native_dialog = false
 		_dialog.title = "Pick blackbox logs"
-		_dialog.exts = PackedStringArray(EXTS)
-		_dialog.picked.connect(func(p): add_files(p) if _pick_for == "new" else add_detail_logs(p))
+		_dialog.add_filter("*.bbl, *.bfl, *.txt, *.BBL, *.BFL, *.TXT", "Blackbox logs")
+		_dialog.files_selected.connect(func(p): add_files(p) if _pick_for == "new" else add_detail_logs(p))
 		add_child(_dialog)
+		_typing(_dialog)
 	var last := str(_cfg().get_value("logfit", "last_dir", ""))
-	_dialog.open(last)
+	if last != "" and DirAccess.dir_exists_absolute(last):
+		_dialog.current_dir = last
+	var vs := get_viewport().get_visible_rect().size
+	_dialog.popup(Rect2i(Vector2i(vs * 0.12), Vector2i(vs * 0.76)))
 
 
 func _cfg() -> ConfigFile:
@@ -873,7 +879,8 @@ func _inspect() -> void:
 
 
 func _process(_d: float) -> void:
-	# the game hides an idle cursor and shows it again only on mouse motion: keep it shown while this is open
+	# the game hides an idle cursor and shows it again only on mouse motion in its own window,
+	# which the file dialog (a window of its own) takes: keep it shown while this is open
 	if visible and Input.mouse_mode != Input.MOUSE_MODE_VISIBLE:
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	if hide_when_unpaused and visible and _was_paused and not _paused():
