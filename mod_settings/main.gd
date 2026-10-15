@@ -37,6 +37,9 @@ extends Node
 ## the choices of a string setting in place of the ones its note lists (real_quad:
 ## the models there are, which change); empty = leave the setting as it is.
 ##
+## A mod with a window of its own (real_quad: the model builder) can have the same
+## protection for its text boxes: put them in the group "zm_typing".
+##
 ## Uninstall: delete the mod_settings folder.
 
 const VERSION := "1.0"
@@ -209,7 +212,8 @@ func _typing_into() -> LineEdit:
 	var f := get_viewport().gui_get_focus_owner()
 	if not (f is LineEdit) or not f.is_visible_in_tree() or not (f as LineEdit).editable:
 		return null
-	var mine := false
+	# the boxes of this mod's pages, and those of another mod's window that put them in the group
+	var mine := f.is_in_group("zm_typing")
 	for box in [_overlay_box, _page]:
 		if box != null and is_instance_valid(box) and box.is_ancestor_of(f):
 			mine = true

@@ -32,6 +32,7 @@ const KNOWN_MD5 := ["b27ff67e1823e52bc519732313f06083"]
 const NEED_METHODS := ["_physics_process", "play_sound", "is_armed", "calc_motor_rpm", "_handle_rotation", "get_thrust_at_rpm"]
 const NEED_PROPERTIES := ["stick_pos", "turtle_mode_active", "current_motor_rpm", "_SETTINGS"]
 const ModelRegistry := preload("flightmodel/model_registry.gd")
+const BuilderWindow := preload("logfit/window.gd")
 const USER_MODELS := "user://real_quad/models"   # the models you made; with the same id as a shipped one, yours flies
 
 const DEFAULTS := {
@@ -56,7 +57,7 @@ var _why_not := ""
 var _log := PackedStringArray()
 var _said := {}
 var model_roots := PackedStringArray()   # folders of model packages (a package each: craft.json, fc.json, plant.json)
-var _dialog: AcceptDialog = null
+var _builder: Control = null          # the "Build a model from logs" window
 
 
 func zm_init(core: Node, _dir: String) -> void:
@@ -183,18 +184,116 @@ func user_models_dir(create := false) -> String:
 	return ProjectSettings.globalize_path(USER_MODELS)
 
 
-## For now only says what is coming; the window that builds a model from logs comes later
+## Opens the window that builds a model from blackbox logs (logfit/window.gd), over the pause menu
 func open_model_builder() -> void:
-	if _dialog == null or not is_instance_valid(_dialog):
-		_dialog = AcceptDialog.new()
-		_dialog.title = "Build a model from logs"
-		_dialog.process_mode = Node.PROCESS_MODE_ALWAYS
-		_dialog.dialog_autowrap = true
-		_dialog.dialog_text = "Not ready yet: this will make a flight model of your own quad from Betaflight blackbox logs, kept in\n%s" % user_models_dir()
-		add_child(_dialog)
-	var size := Vector2i(480, 160)
-	var view := Vector2i(get_viewport().get_visible_rect().size)
-	_dialog.popup(Rect2i(((view - size) / 2).max(Vector2i.ZERO), size))
+	if _builder == null or not is_instance_valid(_builder):
+		var layer := CanvasLayer.new()
+		layer.name = "ModelBuilder"
+		layer.layer = 95
+		layer.process_mode = Node.PROCESS_MODE_ALWAYS
+		add_child(layer)
+		_builder = BuilderWindow.new()
+		_builder.name = "Window"
+		_builder.host = self
+		_builder.out_root = USER_MODELS
+		_builder.hide_when_unpaused = true
+		layer.add_child(_builder)
+	_builder.get_parent().visible = true
+	_builder.open()
+	if not _builder.closed.is_connected(_builder_closed):
+		_builder.closed.connect(_builder_closed)
+
+
+func _builder_closed() -> void:
+	if _builder != null and is_instance_valid(_builder):
+		_builder.get_parent().visible = false
+
+
+## The game's drones for the builder's lists: [{id, name}], then the ones settings.cfg has a section for
+func game_drones() -> Array:
+	var out := []
+	var seen := {}
+	var p := "res://common/default_vehicles.gd"
+	if ResourceLoader.exists(p) or FileAccess.file_exists(p + ".remap"):
+		var s = load(p)
+		if s is Script and s.has_method("get_vehicles"):
+			var list = s.call("get_vehicles")
+			if list is Array:
+				for v in list:
+					if v is Dictionary and v.has("id") and not seen.has(str(v["id"])):
+						seen[str(v["id"])] = true
+						out.append({"id": str(v["id"]), "name": str(v.get("name", v["id"]))})
+	for id in drones:
+		if not seen.has(id):
+			out.append({"id": id, "name": id})
+	return out
+
+
+## The drone being flown ("" when none)
+func flown_vehicle() -> String:
+	var gs := get_node_or_null("/root/ZGamestate")
+	var v = gs.get("selected_vehicle_id") if gs != null else null
+	return str(v) if v != null else ""
+
+
+## Where a model of this id is: "shipped" (real_quad/models, cannot be replaced), "user" (your own) or ""
+func model_origin(id: String) -> String:
+	if DirAccess.dir_exists_absolute(_game_dir().path_join("models").path_join(id)) or DirAccess.dir_exists_absolute("res://real_quad/models/" + id):
+		return "shipped"
+	if registry.has_model(id) or DirAccess.dir_exists_absolute(USER_MODELS.path_join(id)):
+		return "user"
+	return ""
+
+
+## Sets model="<model_id>" in the drone's section of settings.cfg (the rest of the file stays as it is),
+## finds the new package and has the drone fly it at once. "" = done, else why not
+func set_drone_model(vehicle_id: String, model_id: String) -> String:
+	var path := settings_path
+	var text := FileAccess.get_file_as_string(path) if FileAccess.file_exists(path) else FileAccess.get_file_as_string(path.get_base_dir().path_join("settings.default.cfg"))
+	if text == "":
+		return "settings.cfg could not be read"
+	var lines := text.split("\n")
+	var head := RegEx.create_from_string("^\\s*\\[([^\\]]+)\\]")
+	var key := RegEx.create_from_string("^\\s*model\\s*=")
+	var at := -1
+	var sec_end := lines.size()
+	var found := -1
+	for i in lines.size():
+		var m := head.search(lines[i])
+		if m != null:
+			if at >= 0:
+				sec_end = i
+				break
+			if m.get_string(1) == vehicle_id:
+				at = i
+		elif at >= 0 and found < 0 and key.search(lines[i]) != null:
+			found = i
+	var line := "model=\"%s\"" % model_id
+	if found >= 0:
+		lines[found] = line
+	elif at >= 0:
+		var last := sec_end
+		while last > at + 1 and lines[last - 1].strip_edges() == "":
+			last -= 1
+		lines.insert(last, line)
+	else:
+		if lines[lines.size() - 1].strip_edges() != "":
+			lines.append("")
+		lines.append("[%s]" % vehicle_id)
+		lines.append(line)
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		return "could not write %s (%s)" % [path, error_string(FileAccess.get_open_error())]
+	f.store_string("\n".join(lines))
+	f.close()
+	registry.scan()
+	read_settings(path)
+	_said.clear()
+	_say("%s flies %s now" % [vehicle_id, model_id])
+	_write_status()
+	if str(drone_cfg(vehicle_id)["model"]) != model_id:
+		return "settings.cfg did not take it"
+	return ""
 
 
 func _scan_models() -> void:

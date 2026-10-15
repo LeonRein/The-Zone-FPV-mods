@@ -228,8 +228,9 @@ SETTINGS
     - battery_capacity_mah: the pack size for a model whose package does not
       give it
     - unknown_game_version: see HOW IT WORKS
-    - model_builder: shows the Build a model button on the Mods page (not ready:
-      for now it only says so)
+    - model_builder: shows the Build a model from logs button on the Mods page
+      (the window that makes a model from Betaflight blackbox logs; not
+      finished, off by default)
     - a section for each of the game's quads:
         model: "auto" (the model made for it, if any), "off" (the game's
           physics), or a model's name - any model on any drone
