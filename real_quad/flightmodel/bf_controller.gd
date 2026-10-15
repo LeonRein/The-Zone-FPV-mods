@@ -70,15 +70,31 @@ var rx_to_smooth := PackedFloat64Array([0, 0, 0, 0])
 var rc_throttle_smoothed: float = 1000.0
 var auto_sp: float
 var auto_thr: float
-# PT3 states: setpoint (4 channels) and feedforward (3)
-var sp_k := PackedFloat64Array([1, 1, 1, 1])
-var sp_s1 := PackedFloat64Array([0, 0, 0, 0])
-var sp_s2 := PackedFloat64Array([0, 0, 0, 0])
-var sp_s := PackedFloat64Array([0, 0, 0, 0])
-var ffs_k: float = 1.0
-var ffs_s1 := PackedFloat64Array([0, 0, 0])
-var ffs_s2 := PackedFloat64Array([0, 0, 0])
-var ffs_s := PackedFloat64Array([0, 0, 0])
+# PT3 states: setpoint of roll, pitch, yaw (sp_r, sp_p, sp_y), throttle (sp_t) and the feedforward of the three axes
+# (ffs_r, ffs_p, ffs_y), three stages each; single variables because process_rc_command() runs at every PID step
+var sp_k: float = 1.0           # the gain of the axes' setpoints and feedforward
+var sp_k_thr: float = 1.0       # ... of the throttle
+var sp_r1: float = 0.0
+var sp_r2: float = 0.0
+var sp_r3: float = 0.0
+var sp_p1: float = 0.0
+var sp_p2: float = 0.0
+var sp_p3: float = 0.0
+var sp_y1: float = 0.0
+var sp_y2: float = 0.0
+var sp_y3: float = 0.0
+var sp_t1: float = 0.0
+var sp_t2: float = 0.0
+var sp_t3: float = 0.0
+var ffs_r1: float = 0.0
+var ffs_r2: float = 0.0
+var ffs_r3: float = 0.0
+var ffs_p1: float = 0.0
+var ffs_p2: float = 0.0
+var ffs_p3: float = 0.0
+var ffs_y1: float = 0.0
+var ffs_y2: float = 0.0
+var ffs_y3: float = 0.0
 # feedforward
 var ff_smooth_tau: float
 var ff_jitter_inv: float
@@ -541,11 +557,8 @@ func _update_smoothing_cutoffs() -> void:
 	var th: float = float(cfg.rc_smoothing_throttle_cutoff)
 	if th == 0.0:
 		th = maxf(15.0, smoothed_rx_rate_hz * auto_thr)
-	var ksp := pt3_gain(sp, dt)
-	for a in 3:
-		sp_k[a] = ksp
-	ffs_k = ksp
-	sp_k[3] = pt3_gain(th, dt)
+	sp_k = pt3_gain(sp, dt)
+	sp_k_thr = pt3_gain(th, dt)
 
 
 func _calc_feedforward(axis: int) -> void:
@@ -621,41 +634,37 @@ func process_rc_command() -> void:
 		for i in 4:
 			rx_to_smooth[i] = rc_command[3] if i == 3 else raw_setpoint[i]
 	# PT3 smoothing of the setpoints, their feedforward and the throttle
-	for a in 3:
-		var k := sp_k[a]
-		var s1 := sp_s1[a]
-		var s2 := sp_s2[a]
-		var s3 := sp_s[a]
-		var x := rx_to_smooth[a]
-		s1 += k * (x - s1)
-		s2 += k * (s1 - s2)
-		s3 += k * (s2 - s3)
-		sp_s1[a] = s1
-		sp_s2[a] = s2
-		sp_s[a] = s3
-		setpoint_rate[a] = s3
-		s1 = ffs_s1[a]
-		s2 = ffs_s2[a]
-		s3 = ffs_s[a]
-		x = ff_raw[a]
-		s1 += ffs_k * (x - s1)
-		s2 += ffs_k * (s1 - s2)
-		s3 += ffs_k * (s2 - s3)
-		ffs_s1[a] = s1
-		ffs_s2[a] = s2
-		ffs_s[a] = s3
-		ff_smoothed[a] = s3
-	var kt := sp_k[3]
-	var t1 := sp_s1[3]
-	var t2 := sp_s2[3]
-	var t3 := sp_s[3]
-	t1 += kt * (rx_to_smooth[3] - t1)
-	t2 += kt * (t1 - t2)
-	t3 += kt * (t2 - t3)
-	sp_s1[3] = t1
-	sp_s2[3] = t2
-	sp_s[3] = t3
-	rc_throttle_smoothed = t3
+	var k := sp_k
+	sp_r1 += k * (rx_to_smooth[0] - sp_r1)
+	sp_r2 += k * (sp_r1 - sp_r2)
+	sp_r3 += k * (sp_r2 - sp_r3)
+	setpoint_rate[0] = sp_r3
+	sp_p1 += k * (rx_to_smooth[1] - sp_p1)
+	sp_p2 += k * (sp_p1 - sp_p2)
+	sp_p3 += k * (sp_p2 - sp_p3)
+	setpoint_rate[1] = sp_p3
+	sp_y1 += k * (rx_to_smooth[2] - sp_y1)
+	sp_y2 += k * (sp_y1 - sp_y2)
+	sp_y3 += k * (sp_y2 - sp_y3)
+	setpoint_rate[2] = sp_y3
+	k = sp_k_thr
+	sp_t1 += k * (rx_to_smooth[3] - sp_t1)
+	sp_t2 += k * (sp_t1 - sp_t2)
+	sp_t3 += k * (sp_t2 - sp_t3)
+	rc_throttle_smoothed = sp_t3
+	k = sp_k
+	ffs_r1 += k * (ff_raw[0] - ffs_r1)
+	ffs_r2 += k * (ffs_r1 - ffs_r2)
+	ffs_r3 += k * (ffs_r2 - ffs_r3)
+	ff_smoothed[0] = ffs_r3
+	ffs_p1 += k * (ff_raw[1] - ffs_p1)
+	ffs_p2 += k * (ffs_p1 - ffs_p2)
+	ffs_p3 += k * (ffs_p2 - ffs_p3)
+	ff_smoothed[1] = ffs_p3
+	ffs_y1 += k * (ff_raw[2] - ffs_y1)
+	ffs_y2 += k * (ffs_y1 - ffs_y2)
+	ffs_y3 += k * (ffs_y2 - ffs_y3)
+	ff_smoothed[2] = ffs_y3
 	rx_data_new = false
 
 
