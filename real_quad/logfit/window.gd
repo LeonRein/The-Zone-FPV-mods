@@ -791,6 +791,19 @@ func _skipped_note() -> Control:
 	return _label("Not blackbox logs, left out: %s" % ", ".join(skipped), 1.0, WARN)
 
 
+## A log's name in a list: its file name, with its folder when another file in the list has the
+## same name (logs of different flights are often all called btfl_001.bbl)
+static func shown_name(p: String, all: PackedStringArray) -> String:
+	for q in all:
+		if q != p and q.get_file() == p.get_file():
+			return p.get_base_dir().get_file().path_join(p.get_file())
+	return p.get_file()
+
+
+static func same_file(a: String, b: String) -> bool:
+	return ProjectSettings.globalize_path(a).simplify_path() == ProjectSettings.globalize_path(b).simplify_path()
+
+
 ## Adds logs to the new model's list (a file already there is not added twice) and reads them
 func add_files(picked: PackedStringArray) -> void:
 	var added := false
@@ -1024,11 +1037,12 @@ func _refresh() -> void:
 	if paths.is_empty():
 		_files_box.add_child(_note("No logs yet."))
 	var sessions: Array = info.get("sessions", [])
-	for p in paths:
+	for i in paths.size():
+		var p := paths[i]
 		var row := HBoxContainer.new()
-		row.name = "File_" + p.get_file().validate_node_name()
+		row.name = "File_%d_%s" % [i, p.get_file().validate_node_name()]
 		row.add_theme_constant_override("separation", 8)
-		var n := _label(p.get_file())
+		var n := _label(shown_name(p, paths))
 		n.autowrap_mode = TextServer.AUTOWRAP_OFF
 		n.clip_text = true
 		n.tooltip_text = p
@@ -1041,7 +1055,7 @@ func _refresh() -> void:
 		row.add_child(rm)
 		_files_box.add_child(row)
 		for s in sessions:
-			if s is Dictionary and str(s.get("file", "")).get_file() == p.get_file():
+			if s is Dictionary and same_file(str(s.get("file", "")), p):
 				_files_box.add_child(_session_line(s))
 	if busy():
 		_files_box.add_child(_note("Reading the logs..."))
@@ -1554,11 +1568,12 @@ func _fill_logs() -> void:
 		row.add_child(n)
 		row.add_child(_btn("Undo" if removed else "Remove", " Undo " if removed else " Remove ", toggle_log.bind(str(l.name))))
 		_d_logs.add_child(row)
-	for p in pend_add:
+	for i in pend_add.size():
+		var p := pend_add[i]
 		var row := HBoxContainer.new()
-		row.name = "Add_" + p.get_file().validate_node_name()
+		row.name = "Add_%d_%s" % [i, p.get_file().validate_node_name()]
 		row.add_theme_constant_override("separation", 10)
-		var n := _label("%s  - will be added" % p.get_file(), 1.0, GOOD)
+		var n := _label("%s  - will be added" % shown_name(p, pend_add), 1.0, GOOD)
 		n.autowrap_mode = TextServer.AUTOWRAP_OFF
 		n.clip_text = true
 		n.tooltip_text = p
