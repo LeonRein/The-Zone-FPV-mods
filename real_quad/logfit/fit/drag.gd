@@ -84,9 +84,11 @@ static func _polar(r: PackedFloat64Array) -> PackedFloat64Array:
 
 
 ## [[start, end], ...] sample ranges for dead reckoning (see the header).
-static func passes(L: Flight, use: PackedByteArray, hover_sum_w2: float, seg_s: float = 5.0, tol: float = 0.15) -> Array:
+## cancel (optional): polled every 10 000 samples; when it answers true the answer is [] (the caller stops).
+static func passes(L: Flight, use: PackedByteArray, hover_sum_w2: float, seg_s: float = 5.0, tol: float = 0.15, cancel: Callable = Callable()) -> Array:
 	if not L.has_acc():
 		return []
+	var cc := cancel.is_valid()
 	var fs := L.fs
 	var n := int(0.3 * fs)
 	var lw := int(seg_s * fs)
@@ -94,6 +96,8 @@ static func passes(L: Flight, use: PackedByteArray, hover_sum_w2: float, seg_s: 
 	var thrust := PackedFloat64Array()
 	thrust.resize(L.n)
 	for i in L.n:
+		if cc and i % 10000 == 0 and cancel.call():
+			return []
 		var s := 0.0
 		for q in 4:
 			var w: float = TAU * L.motor_hz[q][i]
@@ -109,7 +113,12 @@ static func passes(L: Flight, use: PackedByteArray, hover_sum_w2: float, seg_s: 
 	var ay: PackedFloat64Array = L.acc[1]
 	var out: Array = []
 	var s := 0
+	var next_poll := 10000
 	while s + lw < L.n:
+		if cc and s >= next_poll:
+			next_poll = s + 10000
+			if cancel.call():
+				return []
 		var ok := bad_cum[s + lw] - bad_cum[s] == 0
 		if ok:
 			ok = absf(Num.psum(an, s, n) / n - 1.0) < tol and absf(Num.psum(ax, s, n) / n) < tol and absf(Num.psum(ay, s, n) / n) < tol
@@ -134,8 +143,10 @@ static func passes(L: Flight, use: PackedByteArray, hover_sum_w2: float, seg_s: 
 
 ## Integrates a pass; per 0.25-s block (centre): [time from start, R (body->world), I = int R f g dt,
 ## mean a_x, mean a_y, mean sum of rotor speeds].
-static func dead_reckon(L: Flight, start: int, end: int, blk_s: float = 0.25) -> Array:
+## cancel (optional): polled every 10 000 samples; when it answers true the answer is [] (the caller stops).
+static func dead_reckon(L: Flight, start: int, end: int, blk_s: float = 0.25, cancel: Callable = Callable()) -> Array:
 	var fs := L.fs
+	var cc := cancel.is_valid()
 	var dt := 1.0 / fs
 	var n0 := int(0.3 * fs)
 	var blk := maxi(1, int(blk_s * fs))
@@ -161,6 +172,8 @@ static func dead_reckon(L: Flight, start: int, end: int, blk_s: float = 0.25) ->
 		sw[i - start] = s
 	var out: Array = []
 	for k in end - start:
+		if cc and k % 10000 == 0 and k > 0 and cancel.call():
+			return []
 		var i := start + k
 		if k % blk == h2 and k + h2 < end - start:
 			var a := i - h2
@@ -493,10 +506,12 @@ static func fit(logs: Array, uses: Array, mass: float, shape: Array, sum_w_hover
 	var segs: Array = []
 	for li in logs.size():
 		var L: Flight = logs[li]
-		for ab in passes(L, uses[li], sum_w2_hover):
-			var blocks: Array = dead_reckon(L, ab[0], ab[1]).filter(func(b): return b[0] >= 0.4)
+		for ab in passes(L, uses[li], sum_w2_hover, 5.0, 0.15, cancel):
+			var blocks: Array = dead_reckon(L, ab[0], ab[1], 0.25, cancel).filter(func(b): return b[0] >= 0.4)
 			if blocks.size() >= 4:
 				segs.append([L.name, L.t[ab[0]], blocks])
+		if cancel.is_valid() and cancel.call():
+			return {"ok": false, "cancelled": true, "n_pass": 0, "n": 0, "passes": []}
 	var npass := segs.size()
 	var nb := 0
 	var plist: Array = []

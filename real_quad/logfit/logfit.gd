@@ -3,7 +3,7 @@ extends RefCounted
 ## the work is in fit/, see fit/build.gd for the steps). Runs in a worker Thread: no scene tree.
 ##
 ##   var lf = preload("res://real_quad/logfit/logfit.gd").new()
-##   var info: Dictionary = lf.inspect(paths)
+##   var info: Dictionary = lf.inspect(paths, pack_type = "")   # pack_type of the form if known (lipo | lihv | liion)
 ##       {ok, firmware (text), sessions [{file, id, index, armed_s, usable, reason, firmware, acc, vbat,
 ##        unfilt, chirp_s, log_hz, resting_v}], fields [main field names of the usable sessions],
 ##        prefill {cells: {value, check, note} | null, kv: {value, check, note} | null, motor_poles,
@@ -12,6 +12,8 @@ extends RefCounted
 ##       {ok, grade, errors, warnings, report_md, package_dir, model_id} (+ grade_meaning, fly_next,
 ##        cli, banners, runtime_s, propwash_calibration: the prop wash line of the report)
 ##   lf.cancel()                    # from any thread: build() returns within about a second, writes nothing
+##                                  (a cancel that comes once the package is being moved in place is too late:
+##                                  build() then answers ok); a cancel before a job starts cancels that job
 ##   var r: Dictionary = lf.recalibrate(package_dir, progress)
 ##       only the prop wash calibration (fit/calibrate.gd) of a built package, with the installed dirty_air and
 ##       the log metric in its logfit.json: {ok, text (the summary line), errors}; rewrites plant.json and the
@@ -50,19 +52,34 @@ func cancel() -> void:
 	_mutex.unlock()
 
 
+## A pending cancel (cancel() before the job started) is not cleared: the new job starts cancelled.
 func _new_job(progress: Callable) -> Build:
 	_mutex.lock()
-	_cancel = false
 	_job = Build.new()
 	_job.progress = progress
+	if _cancel:
+		_job.cancel_flag = true
 	var j := _job
 	_mutex.unlock()
 	return j
 
 
-func inspect(paths: PackedStringArray) -> Dictionary:
+## The job is over: true if it was cancelled (the cancel is used up, the next job runs).
+func _end_job() -> bool:
+	_mutex.lock()
+	var was := _cancel or (_job != null and _job.cancel_flag)
+	_cancel = false
+	_job = null
+	_mutex.unlock()
+	return was
+
+
+func inspect(paths: PackedStringArray, pack_type: String = "") -> Dictionary:
 	var job := _new_job(Callable())
-	var info := Scan.inspect(paths, job)
+	var info := Scan.inspect(paths, job, pack_type)
+	if _end_job():
+		info.ok = false
+		info.errors = [{"code": "cancelled", "level": "error", "message": "Cancelled.", "fix": ""}] + info.errors
 	info.errors = info.errors.map(func(e): return message(e))
 	info.warnings = info.warnings.map(func(e): return message(e))
 	return info
@@ -70,6 +87,16 @@ func inspect(paths: PackedStringArray) -> Dictionary:
 
 func build(paths: PackedStringArray, form: Dictionary, out_dir: String, progress: Callable = Callable()) -> Dictionary:
 	var job := _new_job(progress)
+	var r := _build(job, paths, form, out_dir)
+	var cancelled := _end_job()
+	if cancelled and not bool(r.ok):
+		r.errors = [{"text": "Cancelled.", "fix": "", "big": false, "overridable": false, "code": "cancelled", "level": "error"}]
+		r.warnings = []
+		r.report_md = ""
+	return r
+
+
+func _build(job: Build, paths: PackedStringArray, form: Dictionary, out_dir: String) -> Dictionary:
 	var c := craft_from_form(form)
 	var id := out_dir.get_file() if out_dir != "" else ""
 	var re := RegEx.create_from_string("^[a-z0-9_]{1,32}$")
@@ -84,8 +111,6 @@ func build(paths: PackedStringArray, form: Dictionary, out_dir: String, progress
 		if str(b) == str(c.get("id", "")):
 			return fail.call("id_reserved", "\"%s\" is a model that comes with real_quad" % b, "pick another name (%s_2?)" % b)
 	var r := job.run(c, paths, out_dir, bool(form.get("same_quad", false)))
-	if _cancel:
-		return fail.call("cancelled", "Cancelled.", "")
 	var warns: Array = r.get("warnings", []).map(func(e): return message(e))
 	for b in r.get("banners", []):
 		warns.push_front({"text": b, "fix": "", "big": true, "overridable": false, "code": "banner", "level": "warning"})
@@ -171,9 +196,10 @@ func recalibrate(dir: String, progress: Callable = Callable()) -> Dictionary:
 	if not (lf.get("propwash") is Dictionary):
 		return fail.call("The model has no log metric for the prop wash (logfit.json).", "rebuild the model from its logs")
 	_mutex.lock()
-	_cancel = false
 	_cal = Calibrate.new()
 	var cal := _cal
+	if _cancel:
+		cal.cancel()
 	_mutex.unlock()
 	cal.progress = func(fr: float) -> void:
 		if progress.is_valid():
@@ -181,24 +207,23 @@ func recalibrate(dir: String, progress: Callable = Callable()) -> Dictionary:
 	var rec := cal.run(craft, fc, plant, lf.propwash)
 	_mutex.lock()
 	_cal = null
+	# checked right before writing; the cancel is used up
+	var cancelled := _cancel
+	_cancel = false
 	_mutex.unlock()
-	if _cancel:
+	if cancelled:
 		return fail.call("Cancelled.")
 	Calibrate.apply(plant, rec)
 	var tmp := dir.path_join("plant.json.new")
-	var f := FileAccess.open(tmp, FileAccess.WRITE)
-	if f == null:
-		return fail.call("Cannot write %s." % tmp)
-	f.store_string(JSON.stringify(plant, " ", false, true) + "\n")
-	f.close()
+	var werr := Build._write_text(tmp, JSON.stringify(plant, " ", false, true) + "\n")
+	if werr != "":
+		DirAccess.remove_absolute(tmp)
+		return fail.call("Cannot write plant.json: %s." % werr)
 	if DirAccess.rename_absolute(tmp, dir.path_join("plant.json")) != OK:
 		DirAccess.remove_absolute(tmp)
 		return fail.call("Cannot replace plant.json in %s." % dir)
 	var md := FileAccess.get_file_as_string(dir.path_join("report.md"))
 	if md != "":
-		var fm := FileAccess.open(dir.path_join("report.md"), FileAccess.WRITE)
-		if fm != null:
-			fm.store_string(Calibrate.report_md(md, rec))
-			fm.close()
+		Build._write_text(dir.path_join("report.md"), Calibrate.report_md(md, rec))     # (plant.json is what counts)
 	return {"ok": true, "text": Calibrate.summary(rec), "errors": [], "record": rec}
 

@@ -3,7 +3,9 @@ extends RefCounted
 ## sessions with their flight time and why one is skipped, firmware, the fields logged, the form's
 ## prefill (cells from the resting pack voltage, KV and motor poles from the header, the craft name)
 ## and the errors / warnings the pilot sees before building. The files are decoded in worker threads
-## (one per file); nothing of the arrays is kept.
+## (one per file); nothing of the arrays is kept. pack: the form's pack type if known (lipo | lihv | liion),
+## "" = not known yet: the cell checks then use the widest band (2.8-4.45 V/cell) and a cell count that
+## depends on the pack type is only a warning (pack_ambiguous).
 
 const Num := preload("num.gd")
 const Flight := preload("flight.gd")
@@ -12,7 +14,7 @@ const Build := preload("build.gd")
 const FcConfig := preload("fc_config.gd")
 
 
-static func inspect(paths: PackedStringArray, builder: Build) -> Dictionary:
+static func inspect(paths: PackedStringArray, builder: Build, pack: String = "") -> Dictionary:
 	var errs: Array = []
 	var warns: Array = []
 	var sessions: Array = []
@@ -21,14 +23,9 @@ static func inspect(paths: PackedStringArray, builder: Build) -> Dictionary:
 	paths = Build.canonical_order(paths)
 	var files := builder.load_files(paths, 0.0, 1.0)
 	var all_s: Array = []
+	errs.append_array(Build.file_errors(files))
 	for e in files:
-		if e.error == "csv":
-			errs.append(Checks.issue("csv_input", "error", "%s: Blackbox Explorer CSV exports are not accepted" % e.name,
-				"pick the original .bbl/.bfl/.txt file from the flight controller's flash or SD card"))
-		elif e.error == "not_blackbox":
-			errs.append(Checks.issue("not_blackbox", "error", "%s: not a Betaflight blackbox log (no log header found)" % e.name,
-				"pick the .bbl/.bfl/.txt file from the flight controller's flash or SD card"))
-		else:
+		if e.error == "":
 			all_s.append_array(e.sessions)
 	var reason := {}
 	for L: Flight in all_s:
@@ -83,12 +80,13 @@ static func inspect(paths: PackedStringArray, builder: Build) -> Dictionary:
 			"resting_v": Num.pyround(vr, 2) if vr > 0.0 else null})
 	if armed_total > Checks.MAX_ARMED_S:
 		errs.append(Checks.issue("too_much", "error", "%d min of armed flight (at most 60 min per run): pick fewer logs" % roundi(armed_total / 60.0), "pick fewer logs"))
-	var pack := "lipo"
+	if not pack in ["lipo", "lihv", "liion"]:
+		pack = ""
 	if not used.is_empty():
 		for e in Checks.consistency(used, false, pack):
 			(errs if e.level == "error" else warns).append(e)
 	# prefill
-	var prefill := {"cells": null, "kv": null, "motor_poles": null, "craft_name": "", "pack_type": pack}
+	var prefill := {"cells": null, "kv": null, "motor_poles": null, "craft_name": "", "pack_type": pack if pack != "" else "lipo"}
 	if not used.is_empty():
 		var src: Flight = used[0]
 		var newest := -INF
