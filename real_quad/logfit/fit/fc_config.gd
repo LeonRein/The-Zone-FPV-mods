@@ -26,6 +26,12 @@ static func _i(h: Dictionary, k: String, default: int = 0) -> int:
 	return v[0] if v != null and not (v as Array).is_empty() else default
 
 
+## The k-th of a header's list of integers (default if missing)
+static func _nth(h: Dictionary, k: String, i: int, default: int) -> int:
+	var v: Variant = _ints(h, k)
+	return v[i] if v != null and (v as Array).size() > i else default
+
+
 ## Header "Log start datetime" if its year >= 2000 (UTC seconds), else the file's modification time.
 static func session_time(L: Flight) -> float:
 	var re := RegEx.create_from_string("^(\\d{4})-(\\d\\d)-(\\d\\d)T(\\d\\d):(\\d\\d):(\\d\\d)")
@@ -91,6 +97,13 @@ static func from_headers(h: Dictionary, craft_name: String, yaw_motors_reversed:
 		"dterm_lpf1_static_hz": _i(h, "dterm_lpf1_static_hz"), "dterm_lpf1_type": _i(h, "dterm_lpf1_type"),
 		"dterm_lpf2_static_hz": _i(h, "dterm_lpf2_static_hz"), "dterm_lpf2_type": _i(h, "dterm_lpf2_type"),
 		"yaw_lowpass_hz": _i(h, "yaw_lowpass_hz"),
+		"gyro_lpf1_dyn_hz": _ints(h, "gyro_lpf1_dyn_hz", [0, 0]), "gyro_lpf1_dyn_expo": _i(h, "gyro_lpf1_dyn_expo", 5),
+		"gyro_notch_hz": _ints(h, "gyro_notch_hz", [0, 0]), "gyro_notch_cutoff": _ints(h, "gyro_notch_cutoff", [0, 0]),
+		"dterm_notch_hz": _i(h, "dterm_notch_hz"), "dterm_notch_cutoff": _i(h, "dterm_notch_cutoff"),
+		"dyn_notch_count": _i(h, "dyn_notch_count"), "dyn_notch_q": _i(h, "dyn_notch_q", 300),
+		"dyn_notch_min_hz": _i(h, "dyn_notch_min_hz", 100), "dyn_notch_max_hz": _i(h, "dyn_notch_max_hz", 600),
+		"vbat_sag_compensation": _i(h, "vbat_sag_compensation"),
+		"vbat_warning_cell_cv": _nth(h, "vbatcellvoltage", 1, 350),
 		"rpm_filter_harmonics": _i(h, "rpm_filter_harmonics"), "rpm_filter_min_hz": _i(h, "rpm_filter_min_hz", 100),
 		"rpm_filter_fade_range_hz": _i(h, "rpm_filter_fade_range_hz", 50), "rpm_filter_q": _i(h, "rpm_filter_q", 500),
 		"rpm_filter_lpf_hz": _i(h, "rpm_filter_lpf_hz", 150), "rpm_filter_weights": _ints(h, "rpm_filter_weights", [100, 100, 100]),
