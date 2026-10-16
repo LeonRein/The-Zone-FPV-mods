@@ -36,6 +36,7 @@ const EXTS := ["bbl", "bfl", "txt"]
 const TYPING := "zm_typing"
 const CONFIRM_TEXT := "All logs were flown with the same weight, props and battery"
 const INPUTS_UNKNOWN := "Inputs unknown - add logs to rebuild"
+const STALE_HINT := "Built with another dirty_air version - rebuild to update."
 
 # contract 4.2: weight band (g), cells, default prop D / pitch / blades, pack mAh, ducted, Zone drone
 const CLASSES := {
@@ -1351,7 +1352,6 @@ func _build_detail(page: VBoxContainer) -> void:
 	_d_hint = _label("", 0.9)
 	_d_hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_d_foot.add_child(_d_hint)
-	_d_foot.add_child(_btn("Recalibrate", "  Recalibrate prop wash  ", recalibrate, "Runs only the prop wash calibration again (the installed dirty_air changed); the rest of the model stays"))
 	_d_foot.add_child(_btn("SaveMeta", "  Save name and drone  ", save_meta, "Writes the name and the Zone drone into the model; no rebuild"))
 	_d_foot.add_child(_btn("Rebuild", "  Rebuild the model  ", rebuild, "Builds the model again from its logs and these parameters; the old one flies until the new one is ready"))
 
@@ -1759,9 +1759,6 @@ func _update_detail_buttons(v: Dictionary) -> void:
 	var reb := _d_foot.find_child("Rebuild", true, false) as Button
 	var why := _form_problem(v)
 	var busy_t := _busy_text()
-	var rc := _d_foot.find_child("Recalibrate", true, false) as Button
-	rc.visible = bool(detail.get("propwash", {}).get("recalibrate", false))
-	rc.disabled = busy_t != ""
 	save.visible = bool(st.meta) and not bool(st.rebuild)
 	save.disabled = why != "" or busy_t != ""
 	var reb_why := why
@@ -1770,8 +1767,11 @@ func _update_detail_buttons(v: Dictionary) -> void:
 	if reb_why == "" and busy_t != "":
 		reb_why = busy_t
 	reb.disabled = reb_why != ""
+	var idle := "Rebuild runs the fit again on the stored logs."
+	if str(detail.get("propwash", {}).get("stale", "")) != "" and str(detail.get("origin", "")) == "user":
+		idle = STALE_HINT
 	_d_hint.text = reb_why if reb_why != "" else ("Changes: the parameters or logs changed - rebuild to use them." if bool(st.rebuild) else
-		("The name or the drone changed: save it, no rebuild needed." if bool(st.meta) else "Rebuild runs the fit again on the stored logs."))
+		("The name or the drone changed: save it, no rebuild needed." if bool(st.meta) else idle))
 
 
 ## Builds the model again from its logs and the parameters in the form
@@ -1784,18 +1784,6 @@ func rebuild() -> bool:
 		if bool(l.stored) and not pend_rm.has(str(l.name)):
 			keep.append(str(l.name))
 	var err: String = mm.start({"id": detail_id, "form": v["form"], "add": Array(pend_add), "keep": keep, "new": false})
-	if err != "":
-		_d_hint.text = err
-		return false
-	_go("overview")
-	return true
-
-
-## Runs only the prop wash calibration of the open model (a job like a build, shown on the overview)
-func recalibrate() -> bool:
-	if mm == null or detail_id == "":
-		return false
-	var err: String = mm.recalibrate(detail_id)
 	if err != "":
 		_d_hint.text = err
 		return false

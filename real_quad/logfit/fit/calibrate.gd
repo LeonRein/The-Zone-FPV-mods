@@ -98,21 +98,20 @@ static func _f(x: Variant) -> String:
 	return String.num(v, 2 if absf(v) < 10.0 else 1)
 
 
-## Whether the package's calibration was made with another dirty_air than the installed one (or none,
-## with dirty_air installed): {recalibrate, why}
-static func stale(plant: Dictionary) -> Dictionary:
+## Why the package's calibration is not that of the installed dirty_air ("" = it is, or dirty_air is not installed)
+static func stale(plant: Dictionary) -> String:
 	var ver := dirty_air_version()
 	if ver == "":
-		return {"recalibrate": false, "why": ""}
+		return ""
 	var rec: Variant = plant.get("dirty_air_calibration")
 	if not (rec is Dictionary):
-		return {"recalibrate": true, "why": "the prop wash was never calibrated in the game (dirty_air %s is installed)" % ver}
+		return "the prop wash was never calibrated in the game (dirty_air %s is installed)" % ver
 	var was := str(rec.get("dirty_air_version", ""))
 	if was == "":
-		return {"recalibrate": true, "why": "the prop wash was not calibrated (%s); dirty_air %s is installed now" % [str(rec.get("why", "")), ver]}
+		return "the prop wash was not calibrated (%s); dirty_air %s is installed now" % [str(rec.get("why", "")), ver]
 	if was != ver:
-		return {"recalibrate": true, "why": "the prop wash was calibrated with dirty_air %s, %s is installed" % [was, ver]}
-	return {"recalibrate": false, "why": ""}
+		return "the prop wash was calibrated with dirty_air %s, %s is installed" % [was, ver]
+	return ""
 
 
 ## Calibrates. craft, fc, plant: the package's dictionaries (craft.json, fc.json, plant.json); metric: the
@@ -140,7 +139,7 @@ func run(craft: Dictionary, fc: Dictionary, plant: Dictionary, metric: Dictionar
 	if tg.dropcatch == null and tg.calm == null:
 		rec.why = "the logs have neither calm hovers nor drops and catches"
 		return rec
-	# the search always starts from the class defaults (a build's plant has them, a recalibrated one its old values): same result
+	# the search always starts from the class defaults, whatever the plant given has (the same result as a build's)
 	var dflt := Craft.defaults(craft)
 	plant = plant.duplicate()
 	plant.turb_base_ms = dflt.turb_base_ms
@@ -472,38 +471,3 @@ class Sim:
 			out.append(sqrt(s / (2 * n)))
 			i0 += step
 		return out
-
-
-## report.md (md) with the record's calibration in place of the one there: the line under "What the logs
-## cover", the rows of the gust and the calm turbulence (Measured or Class defaults), the section
-static func report_md(md: String, rec: Dictionary) -> String:
-	var rep: RefCounted = load("res://real_quad/logfit/fit/report.gd").new({})
-	rep.propwash_calibration(rec)
-	var lines := Array(md.split("\n"))
-	var out: Array = []
-	var i := 0
-	var drop_rows := ["| dirty_air gust |", "| Calm-air turbulence |", "| dirty_air wash/wake |"]
-	var table := ""
-	while i < lines.size():
-		var l: String = lines[i]
-		if l.begins_with("- Prop wash calibrated") or l.begins_with("- Prop wash not calibrated"):
-			out.append("- " + summary(rec))
-		elif drop_rows.any(func(r): return l.begins_with(r)):
-			pass
-		elif l == "## Prop wash calibration":
-			while i + 1 < lines.size() and not lines[i + 1].begins_with("## "):
-				i += 1
-			out.append(l)
-			out.append_array(rep.sections[0][1])
-			out.append("")
-		else:
-			if l.begins_with("## "):
-				table = l
-			# the end of a table: its new rows first
-			if l == "" and out.size() > 0 and str(out[-1]).begins_with("|"):
-				var rows: Array = rep.measured if table == "## Measured" else rep.defaults if table == "## Class defaults and assumptions" else []
-				for r in rows:
-					out.append("| %s | %s | %s |" % r)
-			out.append(l)
-		i += 1
-	return "\n".join(out)

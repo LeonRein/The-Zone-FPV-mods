@@ -157,8 +157,8 @@ MODELS... (THE MODEL MANAGER)
   calibrated: drop and catch ... (log ...), calm ... (log ...)", or why
   not (dirty_air not installed, no calm hovers or no drops in the logs:
   class values, and what to fly). A model calibrated with another version
-  of dirty_air than the one installed offers "Recalibrate prop wash",
-  which runs only that step.
+  of dirty_air than the one installed says so on its page: rebuild it to
+  calibrate again.
 
 
 WITH THE OTHER MODS

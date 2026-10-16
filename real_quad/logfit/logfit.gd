@@ -14,11 +14,6 @@ extends RefCounted
 ##   lf.cancel()                    # from any thread: build() returns within about a second, writes nothing
 ##                                  (a cancel that comes once the package is being moved in place is too late:
 ##                                  build() then answers ok); a cancel before a job starts cancels that job
-##   var r: Dictionary = lf.recalibrate(package_dir, progress)
-##       only the prop wash calibration (fit/calibrate.gd) of a built package, with the installed dirty_air and
-##       the log metric in its logfit.json: {ok, text (the summary line), errors}; rewrites plant.json and the
-##       report's calibration lines, nothing else (cancelled or failed: nothing)
-##   Calibrate.stale(plant)         # {recalibrate, why}: the installed dirty_air is not the one it was calibrated with
 ##
 ## form (the window's, logfit/window.gd): name, weight_g, cells, pack_type (lipo | lihv | liion), kv,
 ## class, zone_vehicle_id and optionally capacity_mah, prop_in, pitch_in, blades, wheelbase_mm,
@@ -32,12 +27,10 @@ extends RefCounted
 ## progress.call(step_name: String, fraction: float) runs on the worker thread.
 
 const Build := preload("fit/build.gd")
-const Calibrate := preload("fit/calibrate.gd")
 const Scan := preload("fit/scan.gd")
 const Craft := preload("fit/craft.gd")
 
 var _job: Build = null
-var _cal: Calibrate = null
 var _cancel := false
 var _mutex := Mutex.new()
 
@@ -47,8 +40,6 @@ func cancel() -> void:
 	_cancel = true
 	if _job != null:
 		_job.cancel()
-	if _cal != null:
-		_cal.cancel()
 	_mutex.unlock()
 
 
@@ -176,71 +167,3 @@ static func craft_from_form(form: Dictionary) -> Dictionary:
 	if form.get("zone_vehicle_id") != null and str(form.zone_vehicle_id) != "":
 		c.zone_vehicle_id = str(form.zone_vehicle_id)
 	return c
-
-
-## Moves tmp over dst. A rename over an existing file removes it first on Windows, so a failure would lose it: the
-## old one is moved to dst.bak first and comes back if the new one cannot be put in place. False (tmp removed) on failure.
-static func replace_file(tmp: String, dst: String) -> bool:
-	var bak := dst + ".bak"
-	DirAccess.remove_absolute(bak)
-	var had := FileAccess.file_exists(dst)
-	if (had and DirAccess.rename_absolute(dst, bak) != OK) or DirAccess.rename_absolute(tmp, dst) != OK:
-		if had and not FileAccess.file_exists(dst):
-			DirAccess.rename_absolute(bak, dst)
-		DirAccess.remove_absolute(tmp)
-		return false
-	DirAccess.remove_absolute(bak)
-	return true
-
-
-## Only the prop wash calibration of the package in dir (its logfit.json's log metric, the installed
-## dirty_air): plant.json gets the new values and record, report.md its new calibration lines.
-## progress.call(step_name, fraction). {ok, text, errors: [message]}
-func recalibrate(dir: String, progress: Callable = Callable()) -> Dictionary:
-	var fail := func(text: String, fix: String = "") -> Dictionary:
-		return {"ok": false, "text": "", "errors": [{"text": text, "fix": fix, "big": false, "overridable": false, "code": "recalibrate", "level": "error"}]}
-	var rd := func(n: String) -> Dictionary:
-		var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(dir.path_join(n))) if FileAccess.file_exists(dir.path_join(n)) else null
-		return d if d is Dictionary else {}
-	var craft: Dictionary = rd.call("craft.json")
-	var fc: Dictionary = rd.call("fc.json")
-	var plant: Dictionary = rd.call("plant.json")
-	var lf: Dictionary = rd.call("logfit.json")
-	if craft.is_empty() or fc.is_empty() or plant.is_empty():
-		return fail.call("The model's package is incomplete (craft.json, fc.json, plant.json).")
-	if not (lf.get("propwash") is Dictionary):
-		return fail.call("The model has no log metric for the prop wash (logfit.json).", "rebuild the model from its logs")
-	_mutex.lock()
-	_cal = Calibrate.new()
-	var cal := _cal
-	if _cancel:
-		cal.cancel()
-	_mutex.unlock()
-	cal.progress = func(fr: float) -> void:
-		if progress.is_valid():
-			progress.call("Prop wash calibration", fr)
-	var rec := cal.run(craft, fc, plant, lf.propwash)
-	_mutex.lock()
-	_cal = null
-	# checked right before writing; the cancel is used up
-	var cancelled := _cancel
-	_cancel = false
-	_mutex.unlock()
-	if cancelled:
-		return fail.call("Cancelled.")
-	Calibrate.apply(plant, rec)
-	var bad := Build.nonfinite(plant, "plant.json")
-	if bad != "":
-		return fail.call("The calibration produced a value that is not a finite number (%s): plant.json is unchanged." % bad)
-	var tmp := dir.path_join("plant.json.new")
-	var werr := Build._write_text(tmp, JSON.stringify(plant, " ", false, true) + "\n")
-	if werr != "":
-		DirAccess.remove_absolute(tmp)
-		return fail.call("Cannot write plant.json: %s." % werr)
-	if not replace_file(tmp, dir.path_join("plant.json")):
-		return fail.call("Cannot replace plant.json in %s." % dir)
-	var md := FileAccess.get_file_as_string(dir.path_join("report.md"))
-	if md != "":
-		Build._write_text(dir.path_join("report.md"), Calibrate.report_md(md, rec))     # (plant.json is what counts)
-	return {"ok": true, "text": Calibrate.summary(rec), "errors": [], "record": rec}
-
