@@ -46,8 +46,8 @@ Form: 0.3 kg, 4S lipo, 3650 KV, prop 3.5" × 2.5" × 3, class mini, top speed un
 | Torque imbalance β | [0.69, -3.7, 1] ×10⁻³ m | eRPM differences at hover |
 | Battery V0, sag R | 15.95 V, 0.128 | vbat |
 | Rotor drag (linear) | 0.33 1/s | ACC dead reckoning |
-| dirty_air gust | 5.04 | drop and catch 14.8 deg/s (target 14.78) |
-| Calm-air turbulence | 0.204 m/s | calm hover 0.79 deg/s (target 0.79) |
+| dirty_air gust | 4.92 | drop and catch 14.9 deg/s (target 14.78) |
+| Calm-air turbulence | 0.199 m/s | calm hover 0.79 deg/s (target 0.79) |
 
 ## Class defaults and assumptions
 | Quantity | Value | Why |
@@ -163,7 +163,7 @@ Roll steps (12, stick replay through the Betaflight port + model): t90 sim 182.1
 Events (session, time, plateau deg/s, t90 log/sim ms): mini_03_freestyle#1 27.52 s 700 193/190; mini_03_freestyle#1 156.7 s 700 128/122; LOG00002#1 56.81 s 700 297/304; LOG00002#1 90.96 s 700 199/200; mini_10_freestyle#1 186.96 s 700 110/107; mini_10_freestyle#1 187.93 s 700 120/122; LOG00003#1 33.32 s 700 176/174; LOG00003#1 35.89 s 700 76/74; mini_08_freestyle#1 21.55 s 662 199/238; mini_04_freestyle_chirp5#1 50.59 s 587 199/199; mini_09_freestyle#1 5.68 s 525 137/140; mini_08_freestyle#1 27.02 s 510 198/211
 
 ## Prop wash calibration
-- Prop wash calibrated: drop and catch 14.8 °/s (log 14.8), calm 0.79 °/s (log 0.79)
-- dirty_air 1.1, wash and wake 1 (its own figures); scenarios flown in its air without the game (no map, 60 m up), mean of 32 seeds, 2 runs, 6.7 s.
+- Prop wash calibrated: drop and catch 14.9 °/s (log 14.8), calm 0.79 °/s (log 0.79)
+- dirty_air 1.1, wash and wake 1 (its own figures); scenarios flown in its air without the game (no map, 60 m up), mean of 32 seeds, 4 runs, 14.9 s.
 - Drop and catch: 0.9 s at zero throttle from a hover, caught at 45 %; its worst 0.25-s window against 1.283 × the logs' 99th percentile (freestyle5's scale: 14.5 deg/s at 11.3).
 - Calm: 2 s of hover; its median 0.25-s window against the logs' calm median.

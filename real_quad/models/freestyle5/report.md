@@ -44,14 +44,14 @@ Form: 0.65 kg, 6S lipo, 1855 KV, prop 5.1" × 4.99" × 3, class five, top speed 
 | Battery V0, sag R | 25.39 V, 0.134 | vbat |
 | Rotor drag (linear) | 0.29 1/s | ACC dead reckoning |
 | Body drag | cd_area [0.00847, 0.0101, 0.0255] | given top speed 165 km/h |
+| dirty_air gust | 5.54 | drop and catch 14.63 deg/s (target 14.55) |
+| Calm-air turbulence | 0.232 m/s | calm hover 0.75 deg/s (target 0.75) |
 
 ## Class defaults and assumptions
 | Quantity | Value | Why |
 |---|---|---|
 | Motor distance (arm) | 80 mm | 80 mm × D/5.1" (only the absolute inertias depend on it) |
 | Izz | 0.0029 kg·m² | 1.7 × mean roll/pitch inertia (only J_rotor/Izz is measured) |
-| dirty_air gust | 6.79 | prop wash calibration (real_quad calibrate.gd): drop and catch 14.71 deg/s (target 14.55) |
-| Calm-air turbulence | 0.249 m/s | prop wash calibration: calm hover 0.75 deg/s (target 0.75) |
 | dirty_air wash/wake | 1/1 | dirty_air's own figures |
 
 ## Plausibility vs. the five class band
@@ -164,7 +164,7 @@ Roll steps (12, stick replay through the Betaflight port + model): t90 sim 141.4
 Events (session, time, plateau deg/s, t90 log/sim ms): m5_05_freestyle#1 18.24 s 700 189/192; m5_05_freestyle#1 22.13 s 700 127/123; btfl_012#1 44.13 s 700 177/182; btfl_012#1 68.07 s 700 108/102; m5_04_freestyle#1 53.09 s 700 100/98; m5_04_freestyle#1 60.1 s 700 150/151; m5_06_freestyle_abgeschnitten#1 23.79 s 700 125/130; m5_07_chirp9#1 11.25 s 700 133/132; m5_07_chirp9#1 31.31 s 700 105/103; m5_06_freestyle_abgeschnitten#1 13.81 s 662 230/246; btfl_011#1 71.94 s 633 357/359; btfl_011#1 8.63 s 621 219/218
 
 ## Prop wash calibration
-- Prop wash calibrated: drop and catch 14.71 °/s (log 14.55), calm 0.75 °/s (log 0.75)
-- dirty_air 1.1, wash and wake 1 (its own figures); scenarios flown in its air without the game (no map, 60 m up), mean of 32 seeds, 5 runs, 11.5 s (real_quad logfit/fit/calibrate.gd; replaces the hand calibration).
-- Drop and catch: 0.9 s at zero throttle from a hover, caught at 45 %; its worst 0.25-s window against 1.283 × the logs' 99th percentile 11.34 (freestyle5's scale: 14.5 deg/s at 11.3).
+- Prop wash calibrated: drop and catch 14.6 °/s (log 14.6), calm 0.75 °/s (log 0.75)
+- dirty_air 1.1, wash and wake 1 (its own figures); scenarios flown in its air without the game (no map, 60 m up), mean of 32 seeds, 5 runs, 13.9 s.
+- Drop and catch: 0.9 s at zero throttle from a hover, caught at 45 %; its worst 0.25-s window against 1.283 × the logs' 99th percentile (freestyle5's scale: 14.5 deg/s at 11.3).
 - Calm: 2 s of hover; its median 0.25-s window against the logs' calm median.
