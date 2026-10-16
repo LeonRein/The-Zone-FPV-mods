@@ -14,9 +14,10 @@ extends RefCounted
 ##
 ## One job at a time, a start while one runs is refused with a text that names it. A job copies the new
 ## logs into the model's logs/ folder (identical files, by SHA-256, once), runs logfit.build() in a
-## Thread into <work>/building/<id> and, when it worked, puts the old package aside, moves logs/ and
-## inputs.json into the new one and moves that in place: the old model flies until the new one is
-## there, a failed or cancelled job leaves it as it was. inputs.json records the form and the logs
+## Thread into <work>/building/<id> and, when it worked, copies logs/ and writes inputs.json into the new
+## package, checks that it loads, puts the old package aside and moves the new one in place: the old model
+## flies until the new one is there, a failed or cancelled job leaves it as it was (logs included: the old
+## package keeps its own until the swap has worked). inputs.json records the form and the logs
 ## (name, size, SHA-256), so a rebuild needs nothing but the model's folder. A package without it
 ## (made before the manager) shows its form from logfit.json / craft.json and "inputs unknown".
 
@@ -27,6 +28,7 @@ const LOG_EXTS := ["bbl", "bfl", "txt"]
 const INPUTS := "inputs.json"
 const GRADE_RE := "^## Grade ([A-D])"
 const CALIBRATE := "res://real_quad/logfit/fit/calibrate.gd"
+const BFModel := preload("../flightmodel/bf_model.gd")
 
 var host = null                      # real_quad's main.gd
 var root := "user://real_quad/models"
@@ -42,6 +44,7 @@ class Job:
 	var id := ""
 	var name := ""
 	var new_model := false
+	var dir := ""                     # where the model's package is (for a rebuild)
 	var recal := false                # only the prop wash calibration
 	var step := "Starting"
 	var frac := 0.0
@@ -82,13 +85,17 @@ static func read_json(path: String) -> Dictionary:
 	return d if d is Dictionary else {}
 
 
+## Writes a JSON file; false when it could not be written completely (full disk, no rights)
 static func write_json(path: String, d: Dictionary) -> bool:
 	var f := FileAccess.open(path, FileAccess.WRITE)
 	if f == null:
 		return false
-	f.store_string(JSON.stringify(d, " ", false, true) + "\n")
+	var text := JSON.stringify(d, " ", false, true) + "\n"
+	var ok := f.store_string(text)
+	f.flush()
+	ok = ok and f.get_error() == OK
 	f.close()
-	return true
+	return ok and FileAccess.get_file_as_bytes(path).size() == text.to_utf8_buffer().size()
 
 
 static func remove_dir(dir: String) -> void:
@@ -138,10 +145,20 @@ static func copy_file(src: String, dst: String) -> bool:
 	var b := FileAccess.open(dst, FileAccess.WRITE)
 	if b == null:
 		return false
-	while a.get_position() < a.get_length():
-		b.store_buffer(a.get_buffer(4 * 1024 * 1024))
+	var ok := true
+	while ok and a.get_position() < a.get_length():
+		ok = b.store_buffer(a.get_buffer(4 * 1024 * 1024))
+	b.flush()
+	ok = ok and b.get_error() == OK
+	var want := a.get_length()
 	b.close()
-	return true
+	# a full disk can lose the tail without an error on the way: the copy must be as long as the original
+	return ok and _length(dst) == want
+
+
+static func _length(path: String) -> int:
+	var f := FileAccess.open(path, FileAccess.READ)
+	return f.get_length() if f != null else -1
 
 
 static func human_bytes(n: int) -> String:
@@ -152,7 +169,12 @@ static func human_bytes(n: int) -> String:
 	return "%d kB" % maxi(1, int(ceil(n / 1024.0))) if n > 0 else "0 kB"
 
 
-## A name as a folder name: [a-z0-9_], at most 32 characters
+## Names Windows does not allow for a file or folder (with any extension)
+const RESERVED := ["con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+	"lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9"]
+
+
+## A name as a folder name: [a-z0-9_], at most 32 characters, not one Windows reserves (con, nul, com1 ...)
 static func slug(s: String) -> String:
 	var out := ""
 	for ch in s.to_lower():
@@ -160,17 +182,49 @@ static func slug(s: String) -> String:
 	while out.contains("__"):
 		out = out.replace("__", "_")
 	out = out.strip_edges().trim_prefix("_").trim_suffix("_")
-	return out.substr(0, 32).trim_suffix("_")
+	out = out.substr(0, 32).trim_suffix("_")
+	if out in RESERVED:
+		out += "_model"
+	return out
 
 
-## A job that was cut short by the game closing: the old package is put back, the leftovers go.
+## A file name that is safe on Windows too: no trailing dots or spaces (Windows drops them), no reserved
+## device name (con.txt is one as well)
+static func safe_file_name(nm: String) -> String:
+	var out := nm.strip_edges()
+	while out.ends_with("."):
+		out = out.trim_suffix(".").strip_edges()
+	if out == "":
+		out = "log"
+	if out.get_slice(".", 0).strip_edges().to_lower() in RESERVED:
+		out = "_" + out
+	return out
+
+
+## A job that was cut short by the game closing: the old package is put back, the leftovers go. The old
+## package keeps its logs while a job runs (the new one gets copies), but a crash of an older version
+## may have moved some into the new package under construction: those are taken back.
 func recover() -> void:
 	var da := DirAccess.open(work.path_join("old"))
 	if da != null:
 		for d in da.get_directories():
-			if not DirAccess.dir_exists_absolute(root.path_join(d)):
-				DirAccess.rename_absolute(work.path_join("old").path_join(d), root.path_join(d))
+			var back := root.path_join(d)
+			if not DirAccess.dir_exists_absolute(back):
+				if DirAccess.rename_absolute(work.path_join("old").path_join(d), back) == OK:
+					_salvage_logs(back, work.path_join("building").path_join(d).path_join("logs"))
 	remove_dir(work)
+
+
+## Copies the logs a package's inputs.json names but its logs/ lacks from another folder
+func _salvage_logs(pkg: String, from: String) -> void:
+	if not DirAccess.dir_exists_absolute(from):
+		return
+	for l in read_json(pkg.path_join(INPUTS)).get("logs", []):
+		var nm := str(l.get("name", ""))
+		var dst := pkg.path_join("logs").path_join(nm)
+		if nm != "" and FileAccess.file_exists(from.path_join(nm)) and not FileAccess.file_exists(dst):
+			DirAccess.make_dir_recursive_absolute(pkg.path_join("logs"))
+			copy_file(from.path_join(nm), dst)
 
 
 # ------------------------------------------------------------------ the models
@@ -418,6 +472,7 @@ func start(spec: Dictionary) -> String:
 	_job.id = id
 	_job.name = str(form.name)
 	_job.new_model = is_new
+	_job.dir = dir
 	_job.t0 = Time.get_ticks_msec()
 	_job.logfit = _script().new()
 	last = {}
@@ -452,6 +507,7 @@ func recalibrate(id: String) -> String:
 	_job.id = id
 	_job.name = str(read_json(dir.path_join("craft.json")).get("name", id))
 	_job.recal = true
+	_job.dir = dir
 	_job.t0 = Time.get_ticks_msec()
 	_job.logfit = lf
 	last = {}
@@ -497,9 +553,9 @@ func _run(job: Job, id: String, form: Dictionary, add: Array, keep: Array, old_l
 				return fail.call("The stored log %s is missing from the model's folder." % l.name)
 			seen[str(l.sha256)] = str(l.name)
 			entries.append({"name": str(l.name), "size": int(l.size), "sha256": str(l.sha256), "path": p, "staged": false})
-	var names := {}
+	var names := {}                  # lower case: the file system may not tell Log.bbl from log.bbl
 	for e in entries:
-		names[e.name] = true
+		names[str(e.name).to_lower()] = true
 	for i in add.size():
 		if job.cancelled:
 			return fail.call("cancelled")
@@ -513,10 +569,10 @@ func _run(job: Job, id: String, form: Dictionary, add: Array, keep: Array, old_l
 		if seen.has(sha):
 			notes.append("%s is the same file as %s: used once." % [src.get_file(), seen[sha]])
 			continue
-		var nm := src.get_file()
-		if names.has(nm):
+		var nm := safe_file_name(src.get_file())
+		if names.has(nm.to_lower()):
 			nm = "%s_%s" % [sha.substr(0, 8), nm]
-		names[nm] = true
+		names[nm.to_lower()] = true
 		seen[sha] = nm
 		if not copy_file(src, stage.path_join(nm)):
 			return fail.call("Cannot copy %s into the model's folder (disk full?)." % src.get_file())
@@ -542,10 +598,26 @@ func _run(job: Job, id: String, form: Dictionary, add: Array, keep: Array, old_l
 		remove_dir(stage)
 		remove_dir(work.path_join("building").path_join(id))
 		return res
-	# the package is there: logs/ and inputs.json go in, then it replaces the old one
+	# the package is there: copies of the logs and inputs.json go in, it is checked, then it replaces the old one.
+	# The old package keeps its logs until the swap has worked, so whatever goes wrong, nothing is lost.
 	job.progress("Saving the model", 0.99)
 	var logs_dir := out.path_join("logs")
-	DirAccess.make_dir_recursive_absolute(logs_dir)
+	if DirAccess.make_dir_recursive_absolute(logs_dir) != OK:
+		return fail.call("Cannot make the model's folder (disk full?).")
+	for e in entries:
+		var target := logs_dir.path_join(e.name)
+		# a staged log is the copy this job made: it moves (the copy on disk is the only one needed); a kept one is copied
+		var moved: bool = e.staged and DirAccess.rename_absolute(e.path, target) == OK
+		if not moved and not copy_file(e.path, target):
+			return fail.call("Cannot copy %s into the model's folder (disk full?)." % e.name)
+	var inputs := {"inputs_version": 1, "form": fform, "built": Time.get_datetime_string_from_system(true) + "+00:00",
+		"logs": entries.map(func(e): return {"name": e.name, "size": e.size, "sha256": e.sha256})}
+	if not write_json(out.path_join(INPUTS), inputs):
+		return fail.call("Cannot write the model's inputs.json (disk full?).")
+	var probe: BFModel = BFModel.new(out) if _files_parse(out) else null
+	if probe == null or not probe.valid:
+		return fail.call("The new package cannot be loaded (some of its files were not written completely: disk full?). The old model is kept.")
+	probe = null
 	var aside := work.path_join("old").path_join(id)
 	var moved_old := false
 	if not is_new and DirAccess.dir_exists_absolute(old_dir):
@@ -554,24 +626,12 @@ func _run(job: Job, id: String, form: Dictionary, add: Array, keep: Array, old_l
 		if DirAccess.rename_absolute(old_dir, aside) != OK:
 			return fail.call("Cannot replace the old package (%s)." % old_dir)
 		moved_old = true
-	var ok := true
-	for e in entries:
-		var from: String = e.path
-		if not e.staged:
-			from = aside.path_join("logs").path_join(e.name) if moved_old else e.path
-		if DirAccess.rename_absolute(from, logs_dir.path_join(e.name)) != OK:
-			ok = false
-			break
-	var inputs := {"inputs_version": 1, "form": fform, "built": Time.get_datetime_string_from_system(true) + "+00:00",
-		"logs": entries.map(func(e): return {"name": e.name, "size": e.size, "sha256": e.sha256})}
-	if ok:
-		ok = write_json(out.path_join(INPUTS), inputs)
-	if ok:
-		DirAccess.make_dir_recursive_absolute(root)
-		ok = DirAccess.rename_absolute(out, old_dir) == OK
-	if not ok:
-		# put the old package back
-		remove_dir(old_dir)
+	elif is_new and DirAccess.dir_exists_absolute(old_dir):
+		# somebody made a model of this name meanwhile (Duplicate): leave it alone
+		return fail.call("A model \"%s\" appeared while this one was built: pick another name." % id)
+	DirAccess.make_dir_recursive_absolute(root)
+	if DirAccess.rename_absolute(out, old_dir) != OK:
+		# nothing was placed, so there is nothing of the new package to remove at old_dir: put the old one back
 		if moved_old:
 			DirAccess.rename_absolute(aside, old_dir)
 		return fail.call("Cannot put the new package in place (%s)." % old_dir)
@@ -581,11 +641,30 @@ func _run(job: Job, id: String, form: Dictionary, add: Array, keep: Array, old_l
 	return res
 
 
+## The three files of a package are there and JSON objects (without the engine's error messages)
+static func _files_parse(dir: String) -> bool:
+	for f in ["craft.json", "fc.json", "plant.json"]:
+		var p := dir.path_join(f)
+		if not FileAccess.file_exists(p):
+			return false
+		var j := JSON.new()
+		if j.parse(FileAccess.get_file_as_string(p)) != OK or not (j.data is Dictionary):
+			return false
+	return true
+
+
 ## Main thread, each frame while busy(): collects a finished job. True when one finished now.
 func poll() -> bool:
 	if _job == null:
 		return false
 	var s := _job.snapshot()
+	if not s.done and not _job.thread.is_alive():
+		# the worker is gone: it finished a moment ago (done is set before it ends), or it stopped with an
+		# error in the builder's script before it could say so
+		s = _job.snapshot()
+		if not s.done:
+			_job.result = _stopped(_job)
+			s.done = true
 	if not s.done:
 		return false
 	_job.thread.wait_to_finish()
@@ -604,11 +683,37 @@ func poll() -> bool:
 	return true
 
 
+## The result of a job whose thread ended without one (an error in the builder's script): the leftovers go,
+## and an old package the job had put aside comes back
+func _stopped(job: Job) -> Dictionary:
+	var id := job.id
+	var aside := work.path_join("old").path_join(id)
+	if not job.recal and not job.new_model and DirAccess.dir_exists_absolute(aside) and not DirAccess.dir_exists_absolute(job.dir):
+		DirAccess.rename_absolute(aside, job.dir)
+	remove_dir(work.path_join("stage").path_join(id))
+	remove_dir(work.path_join("building").path_join(id))
+	var what := "The prop wash calibration" if job.recal else "The build"
+	return {"ok": false, "errors": [{"text": "%s stopped unexpectedly (an error in the model builder: see the game's log). The model is as it was." % what, "fix": ""}], "warnings": []}
+
+
 ## Waits for the job (tests, quitting)
 func wait() -> void:
 	while _job != null:
 		if not poll():
 			OS.delay_msec(10)
+
+
+## The game is closing: cancels a running job and waits for its thread (a Thread must be waited for), without
+## the notices of poll(). The job cleans up after itself when it is cancelled.
+func shutdown() -> void:
+	if _job == null:
+		return
+	cancel()
+	_job.thread.wait_to_finish()
+	var job := _job
+	_job = null
+	if not bool(job.snapshot().done):
+		_stopped(job)
 
 
 # ------------------------------------------------------------------ copy, delete, edit
@@ -618,7 +723,7 @@ func free_id(base: String) -> String:
 	var b := slug(base)
 	var cand := b.substr(0, 27) + "_copy"
 	var n := 2
-	while host.registry.has_model(cand) or DirAccess.dir_exists_absolute(root.path_join(cand)):
+	while host.registry.has_model(cand) or DirAccess.dir_exists_absolute(root.path_join(cand)) or (_job != null and _job.id == cand):
 		cand = "%s_copy_%d" % [b.substr(0, 25), n]
 		n += 1
 	return cand
@@ -628,6 +733,8 @@ func free_id(base: String) -> String:
 func duplicate(id: String) -> Dictionary:
 	if host == null or not host.registry.has_model(id):
 		return {"ok": false, "error": "Unknown model."}
+	if _job != null and _job.id == id:
+		return {"ok": false, "error": "%s is being built: wait for it to finish, or cancel it." % _job.name}
 	var src := model_dir(id)
 	var nid := free_id(id)
 	var dst := root.path_join(nid)
@@ -638,13 +745,16 @@ func duplicate(id: String) -> Dictionary:
 	var nm := "%s (copy)" % str(craft.get("name", id))
 	craft["id"] = nid
 	craft["name"] = nm.substr(0, 40)
-	write_json(dst.path_join("craft.json"), craft)
+	var written := write_json(dst.path_join("craft.json"), craft)
 	for f in ["logfit.json", INPUTS]:
 		var d := read_json(dst.path_join(f))
 		if d.get("form") is Dictionary:
 			d.form["id"] = nid
 			d.form["name"] = craft.name
-			write_json(dst.path_join(f), d)
+			written = write_json(dst.path_join(f), d) and written
+	if not written:
+		remove_dir(dst)
+		return {"ok": false, "error": "Cannot write the copy's files (disk full?)."}
 	if host.has_method("models_changed"):
 		host.models_changed(nid)
 	return {"ok": true, "id": nid}
@@ -659,6 +769,11 @@ func delete(id: String) -> String:
 	remove_dir(model_dir(id))
 	if host != null and host.has_method("models_changed"):
 		host.models_changed(id)
+	# settings.cfg must not name a model that is gone (a model of the same id may still be there: a shipped one)
+	if host != null and host.registry != null and not host.registry.has_model(id) and "drones" in host and host.has_method("set_drone_model"):
+		for vid in host.drones.keys():
+			if str(host.drones[vid].get("model", "")) == id:
+				host.set_drone_model(str(vid), "auto")
 	return ""
 
 
@@ -674,12 +789,14 @@ func apply_meta(id: String, model_name: String, zone_vehicle_id: String) -> Stri
 	craft["zone_vehicle_id"] = zone_vehicle_id
 	if not write_json(dir.path_join("craft.json"), craft):
 		return "Cannot write the model's craft.json."
+	var failed := ""
 	for f in ["logfit.json", INPUTS]:
 		var d := read_json(dir.path_join(f))
 		if d.get("form") is Dictionary:
 			d.form["name"] = model_name
 			d.form["zone_vehicle_id"] = zone_vehicle_id
-			write_json(dir.path_join(f), d)
+			if not write_json(dir.path_join(f), d) and failed == "":
+				failed = "Cannot write the model's %s." % f
 	if host != null and host.has_method("models_changed"):
 		host.models_changed(id)
-	return ""
+	return failed

@@ -183,6 +183,11 @@ func _ready() -> void:
 
 
 func _exit_tree() -> void:
+	shutdown()
+
+
+## Stops reading the logs and waits for the thread (the window is closed for good, or the game quits)
+func shutdown() -> void:
 	if _thread != null:
 		if _logfit != null:
 			_logfit.cancel()
@@ -613,6 +618,8 @@ func _options_row(f: VBoxContainer, key: String, label: String, items: Array, se
 		_touched[key] = true
 		if key == "class":
 			_class_changed()
+		elif key == "pack_type" and not paths.is_empty():
+			_inspect()               # the pack check depends on the pack type
 		_validate())
 	row.add_child(o)
 	_marker(row, key)
@@ -866,11 +873,13 @@ func _inspect() -> void:
 	if _logfit == null:
 		_logfit = s.new()
 	var ps := paths.duplicate()
+	# the pack type decides the voltage band of the pre-build pack check (Li-ion sits lower than LiPo)
+	var pack: String = PACKS.keys()[(_ctl["pack_type"] as OptionButton).selected] if _ctl.has("pack_type") and (_ctl["pack_type"] as OptionButton).selected >= 0 else ""
 	_done = false
 	_answer = null
 	_thread = Thread.new()
 	_thread.start(func():
-		var r = _logfit.inspect(ps)
+		var r = _logfit.inspect(ps, pack)
 		_mutex.lock()
 		_answer = r
 		_done = true
@@ -893,7 +902,7 @@ func _process(_d: float) -> void:
 		if mm.busy():
 			mm.poll()
 		_job_update()
-		if mm.last != _seen_last or (stage == "overview" and mm.busy() != (_job_step != null)):
+		if mm.last != _seen_last or (stage == "overview" and mm.busy() != (_job_step != null)) or (stage == "detail" and mm.busy() != (_d_step != null)):
 			_seen_last = mm.last
 			_job_changed()
 	if _thread == null:
@@ -902,6 +911,16 @@ func _process(_d: float) -> void:
 	var done := _done
 	var ans = _answer
 	_mutex.unlock()
+	if not done and not _thread.is_alive():
+		# the thread is gone: it finished a moment ago (done is set before it ends), or it stopped with an
+		# error in the log reader before it could answer
+		_mutex.lock()
+		done = _done
+		ans = _answer
+		_mutex.unlock()
+		if not done:
+			ans = {"errors": ["The log reader stopped unexpectedly (an error in the model builder: see the game's log)."]}
+			done = true
 	if not done:
 		return
 	_thread.wait_to_finish()
@@ -919,10 +938,14 @@ func _job_changed() -> void:
 	if stage == "overview":
 		_refresh_overview()
 	elif stage == "detail":
-		if not detail_id.is_empty() and not mm.busy():
+		# a job of this model that worked brings a new package: the page is read again. Any other change (another
+		# model's job, a notice dismissed, a build that failed or was cancelled) leaves the page, and what was
+		# typed or marked in it, alone
+		if not detail_id.is_empty() and not mm.busy() and str(mm.last.get("id", "")) == detail_id and bool(mm.last.get("ok", false)):
 			_reload_detail(false)
 		else:
 			_fill_job_banner()
+			_sync_action_buttons()
 			_update_buttons()
 	elif stage == "new":
 		_validate()
@@ -1476,6 +1499,27 @@ func _fill_actions() -> void:
 			_fill_actions()))
 		_d_actions.add_child(cr)
 	_use_label()
+	_sync_action_buttons()
+
+
+## True while the model of the open page is being built (its folder is about to be replaced)
+func _detail_building() -> bool:
+	return mm != null and mm.busy() and str(mm.current().get("id", "")) == detail_id
+
+
+## Duplicate, Delete and Open folder wait while the open model is built
+func _sync_action_buttons() -> void:
+	var building := _detail_building()
+	for n in ["Duplicate", "Delete", "OpenFolder", "DeleteYes"]:
+		var b := _d_actions.find_child(n, true, false) as Button
+		if b != null:
+			b.disabled = building
+			if building:
+				if not b.has_meta("tip"):
+					b.set_meta("tip", b.tooltip_text)
+				b.tooltip_text = "%s is being built: wait for it to finish, or cancel it." % detail.get("name", detail_id)
+			elif b.has_meta("tip"):
+				b.tooltip_text = str(b.get_meta("tip"))
 
 
 func _use_label() -> void:
