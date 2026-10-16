@@ -5,7 +5,8 @@ extends RefCounted
 ##                Betaflight port) and bf_quad.gd (the plant: clean air, no turbulence, the motor model
 ##                voltage of the log, rotation only); t90 = time from the start of a fast roll stick
 ##                move until the roll rate reaches 90 % of the plateau; lag = how much later the roll
-##                rate reaches half the plateau than the setpoint. Sim vs log, same events.
+##                rate reaches half the plateau than the setpoint (crossings linear between the samples; the
+##                filtered gyro on both sides, as the log's gyroADC). Sim vs log, same events.
 
 const Num := preload("num.gd")
 const Flight := preload("flight.gd")
@@ -79,7 +80,10 @@ static func _t90(t: PackedFloat64Array, g: PackedFloat64Array, j0: int, sgn: flo
 	var e := mini(j0 + int(0.5 * fs), g.size())
 	for k in range(j0, e):
 		if sgn * g[k] >= frac * plateau:
-			return t[k] - t[j0]
+			if k == j0:
+				return 0.0
+			var x := (frac * plateau - sgn * g[k - 1]) / (sgn * g[k] - sgn * g[k - 1])
+			return t[k - 1] + x * (t[k] - t[k - 1]) - t[j0]
 	return null
 
 
@@ -88,7 +92,7 @@ static func _rx_from_rc(L: Flight, i: int, mincheck: float) -> PackedFloat64Arra
 	return PackedFloat64Array([1500.0 + L.rc[0][i], 1500.0 + L.rc[1][i], 1500.0 - L.rc[2][i], thr])
 
 
-## Replays the logged sticks over samples a..b-1: {gyro: [roll, pitch, yaw] arrays, sp: same}.
+## Replays the logged sticks over samples a..b-1: {gyro: [roll, pitch, yaw] arrays (the controller's filtered gyro), sp: same}.
 static func replay(L: Flight, a: int, b: int, p: Dictionary, cfg: Dictionary, vs: PackedFloat64Array) -> Dictionary:
 	var fc = Controller.new(cfg, true)
 	fc.arm(true)
@@ -150,10 +154,8 @@ static func replay(L: Flight, a: int, b: int, p: Dictionary, cfg: Dictionary, vs
 			var uc: PackedFloat64Array = ubuf.pop_front()
 			for _s in n_sub:
 				q.step(uc, dtp, basis, zero)
-		var o: Vector3 = q.omega * R2D
-		rg[0].append(o.x)
-		rg[1].append(o.y)
-		rg[2].append(o.z)
+		for k in 3:
+			rg[k].append(fc.gyro_filtered[k])      # filtered, as the log's gyroADC
 		for k in 3:
 			rs[k].append(fc.setpoint_rate[k])
 	return {"gyro": rg, "sp": rs}

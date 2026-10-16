@@ -2,31 +2,31 @@
   "mass": 0.65,
   "kv_rad": 194.25514574696888,
   "motor_a": [
-    4740.6,
-    5033.4,
-    4988.8,
-    4817.9
+    8022.7,
+    8518.2,
+    8442.7,
+    8153.5
   ],
   "motor_b": [
-    0.0031461,
-    0.0031347,
-    0.0032233,
-    0.0031867
+    0.0053243,
+    0.005305,
+    0.0054549,
+    0.005393
   ],
   "motor_c": [
-    -410.2,
-    -269.8,
-    -223.5,
-    -316.3
+    -694.2,
+    -456.6,
+    -378.3,
+    -535.3
   ],
-  "motor_delay_s": 0.001,
+  "motor_delay_s": 0.002,
   "kT": 1.621e-06,
   "arm": 0.08,
-  "Ixx": 0.001571,
-  "Iyy": 0.001842,
-  "Izz": 0.002901,
-  "kQ": 2.096e-08,
-  "J_rotor": 6.605e-06,
+  "Ixx": 0.002096,
+  "Iyy": 0.002408,
+  "Izz": 0.003828,
+  "kQ": 3.293e-08,
+  "J_rotor": 6.133e-06,
   "yaw_spin": [
     1,
     -1,
@@ -34,9 +34,9 @@
     1
   ],
   "rate_damping": [
-    2.015,
-    0.593,
-    0.44
+    0.0,
+    0.0,
+    0.0
   ],
   "pitch_m_per_rad": 0.020172252417125367,
   "cd_area": [
@@ -49,7 +49,7 @@
   "torque_bias_per_thrust": [
     0.000512,
     -0.0011,
-    -6.26e-06
+    -9.84e-06
   ],
   "battery_v0": 25.39,
   "battery_drain": 0.0,
@@ -64,7 +64,7 @@
   "wake_decel": 1.5,
   "wake_cap": 1.0,
   "wake_gain": 0.35,
-  "turb_base_ms": 0.232,
+  "turb_base_ms": 0.282,
   "pw_turb_ms": 3.8,
   "pw_noise_hz": 25.0,
   "vrs_center": 1.0,
@@ -74,27 +74,27 @@
   "_comment": "5\" freestyle, 650 g, 6S: plant identified by fpvident 1.0.0 from 10 blackbox log sessions (btfl_001#1, btfl_011#1, btfl_012#1, m5_01_chirp6#1, m5_02_crash#1, m5_03_hover#1, m5_04_freestyle#1, m5_05_freestyle#1, m5_06_freestyle_abgeschnitten#1, m5_07_chirp9#1); see report.md. Body frame FLU = Betaflight gyro frame; motor order RR, FR, RL, FL.",
   "dirty_air_wash": 1.0,
   "dirty_air_wake": 1.0,
-  "dirty_air_gust": 5.54,
+  "dirty_air_gust": 5.18,
   "dirty_air_calibration": {
     "state": "calibrated",
     "why": "",
     "dirty_air_version": "1.1",
     "targets": {
-      "calm": 0.75,
-      "dropcatch": 14.55
+      "dropcatch": 14.55,
+      "calm": 0.75
     },
     "scenario": {
-      "calm": 0.75,
-      "dropcatch": 14.63
+      "dropcatch": 14.59,
+      "calm": 0.75
     },
-    "gust": 5.54,
-    "turb_base_ms": 0.232,
+    "gust": 5.18,
+    "turb_base_ms": 0.282,
     "seeds": 32,
     "runs": 5,
     "calibrated": [
       "calm",
       "dropcatch"
     ],
-    "runtime_s": 13.9
+    "runtime_s": 17.3
   }
 }

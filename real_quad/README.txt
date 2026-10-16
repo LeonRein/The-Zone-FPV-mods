@@ -71,8 +71,8 @@ WHAT CHANGES
       dirty_air's descent curve replaces the props' own inflow, so nothing
       counts twice). dirty_air's wash and wake stay its own (1); each
       model sets the gusts of the old wake (plant.json dirty_air_gust;
-      freestyle5 5.54, freestyle35 4.92) and a light turbulence in calm
-      air (turb_base_ms; 0.232 and 0.199 m/s), calibrated so that the gyro
+      freestyle5 5.18, freestyle35 5.4) and a light turbulence in calm
+      air (turb_base_ms; 0.282 and 0.238 m/s), calibrated so that the gyro
       shakes as much as the real quad's did in its logs: a drop and catch
       as its worst moments, a hover as its calm ones. Dropping straight down and
       punching out is the worst case. Without dirty_air the quad flies in
