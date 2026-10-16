@@ -20,7 +20,9 @@ static func _segments(mask: PackedByteArray, minlen: int) -> Array:
 	return out
 
 
-static func log_metric(logs: Array, uses: Array, thr_h: float) -> Dictionary:
+## cancel (optional): polled every 100 windows; when it answers true the metric is incomplete (the caller stops).
+static func log_metric(logs: Array, uses: Array, thr_h: float, cancel: Callable = Callable()) -> Dictionary:
+	var windows := 0
 	var calm := PackedFloat64Array()
 	var chop := PackedFloat64Array()
 	var flip := PackedFloat64Array()
@@ -57,6 +59,9 @@ static func log_metric(logs: Array, uses: Array, thr_h: float) -> Dictionary:
 			var b: int = ab[1]
 			var s := a + n / 2
 			while s < b - n - n / 2:
+				windows += 1
+				if windows % 100 == 0 and cancel.is_valid() and cancel.call():
+					return {"calm": null, "chops": null, "flips": null, "worst_p99": null, "n": [0, 0, 0, 0]}
 				for i in n:
 					var v0 := e0[s + i]
 					var v1 := e1[s + i]

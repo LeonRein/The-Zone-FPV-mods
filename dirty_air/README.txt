@@ -130,7 +130,9 @@ FLIGHT MODELS (real_quad)
   wash, wake and gust), and dirty_air works out the air at each prop for it
   - the old wake's flow and gusts, the descent curve and ring state, the
   floor and ceiling - which the model puts into its own props (see air.gd).
-  No forces and no shake then; the settings here apply as for every drone.
+  No forces and no shake then (shake= does nothing for such a drone: the
+  shake comes from the model's own controller and gyro); the other settings
+  here apply as for every drone.
   All other drones are as before.
 
   Away from the game, a flight model can also fly a made-up flight through

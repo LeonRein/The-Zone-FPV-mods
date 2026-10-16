@@ -5,7 +5,7 @@ extends RefCounted
 ## Simulator only: nothing here is meant for the real quad (no CLI), and the filters stay as flown.
 ##
 ## The flights (calibrate.gd's Sim: bf_model.gd through Godot's integrate_forces() path at 500 Hz ticks,
-## no scene tree; worker threads, each with its own models; fixed seeds, so every result is deterministic):
+## no scene tree; Num.parallel_for over its sims, each with its own models; fixed seeds, so every result is deterministic):
 ##   replay     the pilot's own sticks: the REPLAY_N busiest 4-s windows of the build's logs
 ##   steps      roll, pitch and yaw stick steps at hover throttle, near idle, and roll steps at full throttle
 ##   flip       a full-stick roll and a pitch flip at low throttle, then the catch
@@ -314,13 +314,7 @@ func evaluate(sims: Array, cfg: Dictionary, progs: Array, ref: Dictionary) -> Di
 			tasks.append({"prog": {"name": "propwash seed %d" % (sd + 1), "group": "propwash"}, "variant": "air", "seed": sd + 1})
 	var res := []
 	res.resize(tasks.size())
-	var threads: Array = []
-	for t in sims.size():
-		var th := Thread.new()
-		th.start(_worker.bind(sims[t], cfg, tasks, t, sims.size(), res), Thread.PRIORITY_LOW)
-		threads.append(th)
-	for th in threads:
-		th.wait_to_finish()
+	Num.parallel_for(sims.size(), func(t: int) -> void: _worker(sims[t], cfg, tasks, t, sims.size(), res))
 	evals += 1
 	var groups := {}
 	var counts := {}
@@ -476,7 +470,7 @@ static func _tunable(cfg: Dictionary, k: Array) -> bool:
 	return true
 
 
-## Per worker thread: {nominal, perturbed: Sim (clean air), pw: Sim with dirty_air's air or null}
+## Per worker (one of parallel_for's): {nominal, perturbed: Sim (clean air), pw: Sim with dirty_air's air or null}
 func _sims(craft: Dictionary, fc: Dictionary, plant: Dictionary) -> Array:
 	var pert := plant.duplicate(true)
 	for k in ["Ixx", "Iyy", "Izz"]:

@@ -30,7 +30,13 @@ const COPY := "base/player_rigid_body.gdc"
 const KNOWN_MD5 := ["b27ff67e1823e52bc519732313f06083"]
 # What hook.gd and the player scripts use of the game's script
 const NEED_METHODS := ["_physics_process", "play_sound", "is_armed", "calc_motor_rpm", "_handle_rotation", "get_thrust_at_rpm"]
-const NEED_PROPERTIES := ["stick_pos", "turtle_mode_active", "current_motor_rpm", "_SETTINGS"]
+const NEED_PROPERTIES := ["stick_pos", "turtle_mode_active", "current_motor_rpm", "_SETTINGS", "physics_handler"]
+# player.gd and player_fc.gd override these without calling the game's: it must not have them
+const NOT_ALLOWED_METHODS := ["_ready", "_integrate_forces"]
+# What hook.gd reads of the game's autoloads and the race handler's api (z_api.gd)
+const NEED_GAMESTATE := ["is_paused", "selected_vehicle_id", "current_wind_effect", "OSD_VALUES", "enable_current_max_rate_osd"]
+const NEED_SETTINGS := ["RATES"]
+const NEED_API := ["post_race_run"]
 const ModelRegistry := preload("flightmodel/model_registry.gd")
 const ManagerWindow := preload("logfit/window.gd")
 const ModelManager := preload("logfit/model_manager.gd")
@@ -155,8 +161,21 @@ func _flying_status() -> String:
 	var mid := model_id_for(vid)
 	var how := str(drone_cfg(vid)["model"])
 	var tune := ", " + str(tune_notes[vid]) if mid != "" and tune_notes.has(vid) and drone_cfg(vid)["tune"] == "optimized" else ""
-	return "Flying now: %s%s%s. A model's weight, thrust and top speed come from the model, not from the game's Physics menu." % [
+	var text := "Flying now: %s%s%s. A model's weight, thrust and top speed come from the model, not from the game's Physics menu." % [
 		mid if mid != "" else "the game's physics", " (%s)" % how if how == "auto" or how == "off" else "", tune]
+	# a drone of the drones mod has no model of its own, and the list below shows the section of the drone it is built on
+	var base := added_drone_base(vid)
+	if mid == "" and base != "" and how == "auto":
+		text += " %s is a drone the drones mod added, built on %s: the %s settings below are not used for it. To fly %s's model, add a section [%s] with model=\"%s\" to settings.cfg (README.txt)." % [
+			vid, base, base, base, vid, registry.resolve(base) if registry.resolve(base) != "" else "<model>"]
+	return text
+
+
+## The game drone a drone of the drones mod is built on ("" for any other drone)
+func added_drone_base(vehicle_id: String) -> String:
+	var d = _core.call("get_mod", "drones") if _core != null and _core.has_method("get_mod") else null
+	var v = d.call("zm_vehicle", vehicle_id) if d != null and is_instance_valid(d) and d.has_method("zm_vehicle") else null
+	return str(v.get("base", "")) if v is Dictionary else ""
 
 
 ## Mod_settings' choices for a drone's "model": auto, off, then every model there is; its "tune": flown, optimized
@@ -244,8 +263,8 @@ func models_changed(id := "") -> void:
 	rescan_models()
 
 
-## The game is closing: a running build is cancelled and its thread waited for (a Thread must not be dropped
-## running), the manager window's log reader too
+## The game is closing (this leaves the tree; not on a close request the game may refuse): a running build is
+## cancelled and its thread waited for (a Thread must not be dropped running), the manager window's log reader too
 func _shutdown() -> void:
 	if manager != null:
 		manager.shutdown()
@@ -255,11 +274,6 @@ func _shutdown() -> void:
 
 func _exit_tree() -> void:
 	_shutdown()
-
-
-func _notification(what: int) -> void:
-	if what == NOTIFICATION_WM_CLOSE_REQUEST:
-		_shutdown()
 
 
 func _job_finished(rec: Dictionary) -> void:
@@ -306,7 +320,8 @@ func game_drones() -> Array:
 			var list = s.call("get_vehicles")
 			if list is Array:
 				for v in list:
-					if v is Dictionary and v.has("id") and not seen.has(str(v["id"])):
+					# (the test wing has another physics handler: no model flies it)
+					if v is Dictionary and v.has("id") and not seen.has(str(v["id"])) and v.get("physics_controller", "quad_v1") == "quad_v1":
 						seen[str(v["id"])] = true
 						out.append({"id": str(v["id"]), "name": str(v.get("name", v["id"]))})
 	for id in drones:
@@ -408,22 +423,36 @@ func drone_cfg(vehicle_id: String) -> Dictionary:
 	return drones.get(vehicle_id, DRONE_DEFAULTS)
 
 
+## A mod's child node that has the methods real_quad's version of the mod adds; null for a mod that is not
+## loaded and for a stock (unpatched) version of it, which has none of them
+func _patched(mod_id: String, child: String, methods: Array) -> Node:
+	var m = _core.call("get_mod", mod_id) if _core != null and _core.has_method("get_mod") else null
+	var n: Node = m.get_node_or_null(child) if m != null and is_instance_valid(m) else null
+	for f: String in methods:
+		if n != null and not n.has_method(f):
+			return null
+	return n
+
+
+## Why a mod's additions are not there: loaded (so a stock version) or not loaded
+func _missing(mod_id: String) -> String:
+	var loaded: bool = _core != null and _core.has_method("get_mod") and _core.call("get_mod", mod_id) != null
+	return "is a stock version without the additions real_quad needs - use the one that came with it" if loaded else "is not loaded"
+
+
 ## dirty_air's air node (the air at the props: prop wash, floor and ceiling), or null
 func air_node() -> Node:
-	var da = _core.call("get_mod", "dirty_air") if _core != null and _core.has_method("get_mod") else null
-	return da.get_node_or_null("Air") if da != null and is_instance_valid(da) else null
+	return _patched("dirty_air", "Air", ["set_model"])
 
 
 ## prop_damage's Props node (the props' wear and out-of-balance), or null
 func props_node() -> Node:
-	var pd = _core.call("get_mod", "prop_damage") if _core != null and _core.has_method("get_mod") else null
-	return pd.get_node_or_null("Props") if pd != null and is_instance_valid(pd) else null
+	return _patched("prop_damage", "Props", ["set_model"])
 
 
 ## battery_sag's pack node, or null
 func battery_node() -> Node:
-	var b = _core.call("get_mod", "battery_sag") if _core != null and _core.has_method("get_mod") else null
-	return b.get_node_or_null("Battery") if b != null and is_instance_valid(b) else null
+	return _patched("battery_sag", "Battery", ["external_pack", "drive"])
 
 
 ## The battery a model's craft flies on (its package's craft.json "battery"), the capacity from
@@ -477,10 +506,10 @@ func flying(vehicle_id: String, model: RefCounted) -> void:
 		str(snappedf(float(s["drag"]) if float(s["drag"]) > 0.0 else model.get_package_linear_drag(), 0.01)),
 		("prop wash from dirty_air, wash %s and wake %s (calibrated x propwash %s)%s" % [str(snappedf(model.get_air_wash(), 0.01)),
 			str(snappedf(model.get_air_wake(), 0.01)), str(s["propwash"]), ", with its floor and ceiling effect" if bool(cfg["ground_ceiling_effect"]) else ""])
-			if air != null else "no prop wash (dirty_air is not loaded: clean air)",
+			if air != null else "no prop wash (dirty_air %s: clean air)" % _missing("dirty_air"),
 		int(bat["cells"]), int(bat["capacity_mah"]),
 		" (NOT IN THE PACKAGE: battery_capacity_mah from settings.cfg)" if no_cap else "", float(bat["resistance_mohm"]),
-		"battery_sag's pack, driven by the model's motor current" if battery_node() != null else "sagging but not draining (battery_sag is not loaded)"])
+		"battery_sag's pack, driven by the model's motor current" if battery_node() != null else "sagging but not draining (battery_sag %s)" % _missing("battery_sag")])
 	_write_status()
 
 
@@ -490,6 +519,14 @@ func _ready() -> void:
 		return
 	var fc := _flight_controller()
 	if _mode_3d():
+		var m3 = _core.call("get_mod", "mode_3d")
+		if not m3.is_node_ready():
+			# it starts after this: look again when it has, it may not take effect
+			_why_not = "mode_3d has not started yet; real_quad goes on when it has, if mode_3d is not in effect then"
+			_say("waiting: " + _why_not)
+			m3.ready.connect(_ready, CONNECT_ONE_SHOT)
+			_write_status()
+			return
 		_why_not = "mode_3d is in effect (it flies the quad with motors that run both ways, a mixer the Betaflight models do not have)"
 		_say("not in effect: " + _why_not + ". The game, flight_controller and mode_3d fly every drone as without this mod; "
 			+ "to fly the drones with a model, set enabled=false in mode_3d/settings.cfg (and the other way round)")
@@ -537,25 +574,21 @@ func _coexistence(fc: bool) -> void:
 		lines.append("dirty_air: the prop wash of the modelled quads - its wake, gusts, descent curve and vortex ring state go into each prop of the model, with the wash and wake of the model's package"
 			+ ("; and its floor and ceiling effect" if bool(cfg["ground_ceiling_effect"]) else " (its floor and ceiling effect off: ground_ceiling_effect=false)") + "; it pushes and shakes only the other drones")
 	else:
-		lines.append("dirty_air: not loaded, so the modelled quads fly without prop wash (clean air)")
+		lines.append("dirty_air %s, so the modelled quads fly without prop wash (clean air)" % _missing("dirty_air"))
 	if battery_node() != null:
 		lines.append("battery_sag: its pack is the modelled quad's - drained by the model's motor current, its voltage under load what the motors get; fresh packs and settings as battery_sag's")
 	else:
-		lines.append("battery_sag: not loaded, so a modelled quad's pack sags as identified but does not drain (shown on fpv_osd through real_quad)")
+		lines.append("battery_sag %s, so a modelled quad's pack sags as identified but does not drain (shown on fpv_osd through real_quad)" % _missing("battery_sag"))
 	for id in ["rotor_drag", "motor_response"]:
 		if _core.call("get_mod", id) != null:
 			lines.append("%s: its forces do not reach a modelled quad (the physics engine ignores them while the model flies it): the model has its own %s" % [
 				id, {"rotor_drag": "rotor drag (drag= in settings.cfg)", "motor_response": "motor response"}[id]])
-	var pd := props_node()
-	if pd != null:
-		if pd.has_method("set_model"):
-			lines.append("prop_damage: its worn props' thrust loss goes into each rotor of the modelled quad (a broken prop gives none), "
-				+ "the props' out-of-balance becomes vibration in the gyro the Betaflight loop reads; hits, clips and kicks still push the quad, "
-				+ "and it no longer pushes or shakes the model itself")
-		else:
-			lines.append("prop_damage: too old for real_quad (no set_model()): a modelled quad's props stay new; its hits and kicks still push the quad")
+	if props_node() != null:
+		lines.append("prop_damage: its worn props' thrust loss goes into each rotor of the modelled quad (a broken prop gives none), "
+			+ "the props' out-of-balance becomes vibration in the gyro the Betaflight loop reads; hits, clips and kicks still push the quad, "
+			+ "and it no longer pushes or shakes the model itself")
 	elif _core.call("get_mod", "prop_damage") != null:
-		lines.append("prop_damage: loaded without props, so the modelled quad's props stay new")
+		lines.append("prop_damage %s (or has no props), so the modelled quad's props stay new; its hits and kicks still push the quad" % _missing("prop_damage"))
 	if _core.call("get_mod", "pilot_audio") != null:
 		lines.append("pilot_audio: places the quad's sound; the model's four rotor speeds are on the quad as metadata motor_rpm")
 	for l in lines:
@@ -602,6 +635,9 @@ func _check() -> String:
 	for m in NEED_METHODS:
 		if not have.has(m):
 			return "player_rigid_body.gd has no %s() any more; an update of this mod is needed" % m
+	for m in NOT_ALLOWED_METHODS:
+		if have.has(m):
+			return "player_rigid_body.gd has a %s() now, which player.gd would replace; an update of this mod is needed" % m
 	var props := {}
 	for p in copy.get_script_property_list():
 		props[p["name"]] = true
@@ -613,6 +649,21 @@ func _check() -> String:
 		has_signal = has_signal or s["name"] == "teleported"
 	if not has_signal:
 		return "player_rigid_body.gd has no teleported signal any more; an update of this mod is needed"
+	for pair in [["ZGamestate", NEED_GAMESTATE], ["ZSettings", NEED_SETTINGS]]:
+		var n := get_node_or_null("/root/" + pair[0])
+		var names := {}
+		for p in (n.get_property_list() if n != null else []):
+			names[p["name"]] = true
+		for p in pair[1]:
+			if not names.has(p):
+				return "the game's %s has no %s any more; an update of this mod is needed" % [pair[0], p]
+	var api = load("res://multiplayer/z_api.gd")
+	var api_has := {}
+	for m in (api.get_script_method_list() if api is Script else []):
+		api_has[m["name"]] = true
+	for m in NEED_API:
+		if not api_has.has(m):
+			return "the game's z_api.gd has no %s() any more; an update of this mod is needed" % m
 	return ""
 
 

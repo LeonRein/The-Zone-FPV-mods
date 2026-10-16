@@ -170,23 +170,13 @@ static func local_to_flu(v: Vector3) -> Vector3:
 	return Vector3(-v.z, -v.x, v.y)
 
 
-## Prop load relative to static thrust: inflow along +z body (climbing, fast forward flight)
-## unloads the prop, inflow from below loads it. v_axial = air speed along +z body. With the outside
-## air (has_air) descending is dirty_air's (its descent curve and vortex ring state, air_mean), so the
-## prop's own load only counts climbing - nothing is counted twice.
-func _prop_load(i: int, v_axial: float) -> float:
-	if v_axial == 0.0 or (has_air and v_axial < 0.0):
-		return 1.0
-	return clampf(1.0 - v_axial / maxf(w[i] * pitch_m_per_rad, 1.0), PROP_LOAD_MIN, PROP_LOAD_MAX)
-
-
 ## Advance the quad by dt. u = motor commands 0..1 (already delayed), basis = body->world (Godot),
-## vel = world velocity, pos = world position. Updates the rotor speeds and the body rates (omega)
+## vel = world velocity. Updates the rotor speeds and the body rates (omega)
 ## and returns the world linear acceleration including gravity.
 ##
 ## (Written for speed - this runs at the rate of the firmware's PID loop, 4-8 kHz: the rotors' loops are
 ## one, the sums run in the order of the rotors, the turbulence constants are worked out once.)
-func step(u: PackedFloat64Array, dt: float, basis: Basis, vel: Vector3, _pos: Vector3, _armed: bool) -> Vector3:
+func step(u: PackedFloat64Array, dt: float, basis: Basis, vel: Vector3) -> Vector3:
 	# velocity relative to the air (which moves where the quad flies through its old wake)
 	var vl := (vel - air_vel - wind) * basis     # (orthonormal: v * basis = basis.transposed() * v), world -> body
 	var vb := Vector3(-vl.z, -vl.x, vl.y)        # local_to_flu()
@@ -210,7 +200,7 @@ func step(u: PackedFloat64Array, dt: float, basis: Basis, vel: Vector3, _pos: Ve
 			_turb_drive = sqrt(_turb_c / dt)    # unit-variance band-limited noise
 		drive = _turb_drive
 	# ESC/motors and rotor thrust with inflow (the air and the turbulence along each prop's axis, with the updated rotor speed)
-	var own_load := v_ax != 0.0 and not (has_air and v_ax < 0.0)     # _prop_load(), inlined (hot loop)
+	var own_load := v_ax != 0.0 and not (has_air and v_ax < 0.0)     # the prop's own inflow load; descending in dirty_air's air is its (nothing counts twice)
 	var vbat := v_batt
 	var t_total := 0.0
 	var wsum := 0.0

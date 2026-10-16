@@ -3,6 +3,8 @@
 # would not be comparable). hook.gd puts an instance of it into the race track handler.
 extends "res://multiplayer/z_api.gd"
 
+var original = null     # the api that was in the handler before this one, put back when no model flies
+
 
 func post_race_run(track_id: int, data, callback: Callable):
 	print("[real_quad] race run NOT submitted (real_quad physics), track ", track_id)

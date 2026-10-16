@@ -11,7 +11,8 @@ const Segments := preload("segments.gd")
 const G := 9.81
 
 
-static func hover_mask(L: Flight, use: PackedByteArray, with_acc: bool = true) -> PackedByteArray:
+## cancel (optional): polled every 10 000 samples; when it answers true the result is incomplete (the caller stops).
+static func hover_mask(L: Flight, use: PackedByteArray, with_acc: bool = true, cancel: Callable = Callable()) -> PackedByteArray:
 	var k := maxi(3, int(1.0 * L.fs))
 	var gq := Num.uniform_filter1d(Segments.max_abs_rows(L.gyro), k)
 	var t2 := PackedFloat64Array()
@@ -28,6 +29,8 @@ static func hover_mask(L: Flight, use: PackedByteArray, with_acc: bool = true) -
 		az = L.acc[2]
 	var m := Num.zeros_mask(L.n)
 	for i in L.n:
+		if Num.stop(cancel, i):
+			return m
 		if use[i] == 0 or not (gq[i] < 30.0):
 			continue
 		if not (sqrt(maxf(m2[i] - m1[i] * m1[i], 0.0)) < 0.03):
@@ -47,7 +50,7 @@ static func hover_mask(L: Flight, use: PackedByteArray, with_acc: bool = true) -
 
 ## Pooled hover statistics over the ACC sessions if there are any, else all; model_v: per session the
 ## model voltage (motor fit) for the hover voltage. null if no session has 2 s of hover.
-static func hover(logs: Array, uses: Array, mass: float, model_v: Array) -> Variant:
+static func hover(logs: Array, uses: Array, mass: float, model_v: Array, cancel: Callable = Callable()) -> Variant:
 	var idx: Array = []
 	for i in logs.size():
 		if logs[i].has_acc():
@@ -62,13 +65,15 @@ static func hover(logs: Array, uses: Array, mass: float, model_v: Array) -> Vari
 	var per_log := {}
 	for i in idx:
 		var L: Flight = logs[i]
-		var m := hover_mask(L, uses[i], true)
+		var m := hover_mask(L, uses[i], true, cancel)
 		var cnt := m.count(1)
 		if cnt < 2.0 * L.fs:
 			continue
 		var s2 := PackedFloat64Array()
 		var su := PackedFloat64Array()
 		for j in L.n:
+			if Num.stop(cancel, j):
+				return null
 			if m[j] == 0:
 				continue
 			var s := 0.0
@@ -98,16 +103,18 @@ static func hover(logs: Array, uses: Array, mass: float, model_v: Array) -> Vari
 
 
 ## Hover speed from the no-ACC rule on the ACC sessions, to show how good the fallback is.
-static func steady_estimate(logs: Array, uses: Array) -> Dictionary:
+static func steady_estimate(logs: Array, uses: Array, cancel: Callable = Callable()) -> Dictionary:
 	var out := {}
 	for i in logs.size():
 		var L: Flight = logs[i]
 		if not L.has_acc():
 			continue
-		var m := hover_mask(L, uses[i], false)
+		var m := hover_mask(L, uses[i], false, cancel)
 		if m.count(1) > 2.0 * L.fs:
 			var s2 := PackedFloat64Array()
 			for j in L.n:
+				if Num.stop(cancel, j):
+					return out
 				if m[j] != 0:
 					var s := 0.0
 					for q in 4:

@@ -20,8 +20,6 @@
   "top_speed_kmh": 165.0,
   "ducted": false,
   "class": "five",
-  "camera_angle_deg": 20,
-  "camera_fov_deg": 123,
   "package_format": 2,
   "linear_drag": 0.5
 }

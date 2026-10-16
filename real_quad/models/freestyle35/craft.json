@@ -19,7 +19,5 @@
  },
  "ducted": false,
  "class": "mini",
- "camera_angle_deg": 20,
- "camera_fov_deg": 123,
  "package_format": 2
 }

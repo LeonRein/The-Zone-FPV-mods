@@ -106,13 +106,15 @@ static func _sum_w2(L: Flight) -> PackedFloat64Array:
 	return o
 
 
-static func motor_stall(L: Flight, hover_thr: float) -> PackedByteArray:
+static func motor_stall(L: Flight, hover_thr: float, cancel: Callable = Callable()) -> PackedByteArray:
 	var out := Num.zeros_mask(L.n)
 	if not L.has_hz():
 		return out
 	var cond := Num.zeros_mask(L.n)
 	var h := PackedFloat64Array([0, 0, 0, 0])
 	for i in L.n:
+		if Num.stop(cancel, i):
+			return out
 		if not (L.throttle[i] > 0.5 * hover_thr and L.armed[i] != 0):
 			continue
 		for m in 4:
@@ -193,7 +195,8 @@ static func _nruns(mask: PackedByteArray) -> int:
 
 
 ## [use windows, info]
-static func auto_segments(L: Flight, hover_thr: float, erpm_limit_hz: float) -> Array:
+## cancel (optional): polled every 10 000 samples; when it answers true the answer is [] (the caller stops).
+static func auto_segments(L: Flight, hover_thr: float, erpm_limit_hz: float, cancel: Callable = Callable()) -> Array:
 	var t := L.t
 	var n := L.n
 	var fs := L.fs
@@ -219,6 +222,8 @@ static func auto_segments(L: Flight, hover_thr: float, erpm_limit_hz: float) -> 
 		var az: PackedFloat64Array = L.acc[2]
 		var hov := PackedFloat64Array()
 		for i in n:
+			if Num.stop(cancel, i):
+				return []
 			if absf(an[i] - 1.0) < 0.08 and az[i] > 0.97 * an[i] and gmax[i] < 25.0 and absf(thr[i] - hover_thr) < 0.15 * hover_thr:
 				hov.append(w2[i] if not w2.is_empty() else 0.0)
 		var use_w2 := not w2.is_empty() and hov.size() > 200
@@ -226,6 +231,8 @@ static func auto_segments(L: Flight, hover_thr: float, erpm_limit_hz: float) -> 
 		var azs := Num.uniform_filter1d(az, k)
 		var cand := Num.zeros_mask(n)
 		for i in n:
+			if Num.stop(cancel, i):
+				return []
 			var tf: float = w2[i] / w2h if use_w2 else thr[i] / hover_thr
 			var one_g := absf(an[i] - 1.0) < 0.08
 			var c := one_g and gmax[i] < 25.0 and (thr[i] < 0.5 * hover_thr or tf < 0.6)
@@ -251,7 +258,7 @@ static func auto_segments(L: Flight, hover_thr: float, erpm_limit_hz: float) -> 
 	info.ground_s = Num.pyround(ground.count(1) / fs, 1)
 	ground = _dilate(t, ground, MARGIN, MARGIN)
 	# crashes, impacts, telemetry glitches
-	var stall := motor_stall(L, hover_thr)
+	var stall := motor_stall(L, hover_thr, cancel)
 	info.stalls = _nruns(stall)
 	var hit := Num.zeros_mask(n)
 	var gu := L.gyro_unfilt
@@ -271,6 +278,8 @@ static func auto_segments(L: Flight, hover_thr: float, erpm_limit_hz: float) -> 
 			lat[i] = sqrt(ax[i] * ax[i] + ay[i] * ay[i])
 		var an2 := norm_col(L.acc)
 		for i in n:
+			if Num.stop(cancel, i):
+				return []
 			if thr[i] >= 1.3 * hover_thr:
 				continue
 			# an impact is a short spike; a hard brake from top speed gives > 3 g of smooth drag
@@ -324,8 +333,11 @@ static func chirp_windows(L: Flight) -> Array:
 
 
 ## {use, chirps, source, auto, auto_info, chirps_auto}
-static func segment_log(L: Flight, erpm_limit_hz: float) -> Dictionary:
-	var au := auto_segments(L, rough_hover_throttle(L), erpm_limit_hz)
+## cancel (optional): polled every 10 000 samples; when it answers true the answer is empty (the caller stops).
+static func segment_log(L: Flight, erpm_limit_hz: float, cancel: Callable = Callable()) -> Dictionary:
+	var au := auto_segments(L, rough_hover_throttle(L), erpm_limit_hz, cancel)
+	if au.is_empty():
+		return {"auto": [], "auto_info": {}, "chirps_auto": [], "use": [], "chirps": [], "source": "auto"}
 	var ch := chirp_windows(L)
 	var res := {"auto": au[0], "auto_info": au[1], "chirps_auto": ch, "use": au[0], "source": "auto"}
 	var um := mask_from_windows(L.t, au[0])

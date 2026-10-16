@@ -33,10 +33,10 @@ var fc: Controller
 var quad: Quad
 var fc_cfg: Dictionary               # fc.json
 var plant_params: Dictionary         # plant.json
-var cpu_us_per_tick: float = 0.0     # smoothed cost of integrate_forces(), for the OSD
+var cpu_us_per_tick: float = 0.0     # smoothed cost of integrate_forces() (tick_bench)
 ## Prop wash strength as a multiple of the calibrated one: scales the wash and wake handed to dirty_air.
 var propwash_scale: float = 1.0
-var air_wash_level: float = 0.0      # dirty_air's wash level at the quad last tick (telemetry)
+var air_wash_level: float = 0.0      # dirty_air's wash level at the quad last tick (the tests read it)
 var cells: int = 6                   # the pack (craft.json "battery"), see battery_spec()
 var lihv := false
 var _cell_full: float = CELL_FULL_LIPO   # a full cell of the pack in use, at rest
@@ -85,6 +85,11 @@ func _init(p_package_dir: String) -> void:
 	plant_params = _load_json(package_dir.path_join("plant.json"))
 	if craft.is_empty() or fc_cfg.is_empty() or plant_params.is_empty():
 		return
+	for k in ["mass", "Ixx", "Iyy", "Izz", "kT"]:       # (a body without mass or inertia, or a rotor without thrust, cannot fly)
+		var v: Variant = plant_params.get(k)
+		if not ((v is float or v is int) and is_finite(float(v)) and float(v) > 0.0):
+			push_error("bf_model: plant.json %s must be a number above zero in %s" % [k, package_dir])
+			return
 	_rx_frame_us = maxi(1, roundi(1e6 / maxf(float(fc_cfg.get("rx_rate_hz", 250.0)), 1.0)))
 	_deadband = clampf(float(fc_cfg.get("deadband", 0.0)), 0.0, 499.0)
 	_yaw_deadband = clampf(float(fc_cfg.get("yaw_deadband", 0.0)), 0.0, 499.0)
@@ -201,7 +206,7 @@ static func optimized_tune(dir: String) -> Array:
 	var t: Dictionary = d.get("_tune", {}) if d.get("_tune") is Dictionary else {}
 	if str(t.get("fc_sha256", "")) != FileAccess.get_sha256(dir.path_join("fc.json")) \
 			or str(t.get("plant_sha256", "")) != FileAccess.get_sha256(dir.path_join("plant.json")):
-		return [{}, "its optimized tune is out of date (the model was rebuilt or recalibrated)"]
+		return [{}, "its optimized tune is out of date (the model was rebuilt)"]
 	return [d, ""]
 
 
@@ -284,18 +289,8 @@ func clear_props() -> void:
 
 
 ## How hard each rotor turns, 0..1.2: its thrust against full thrust (speed squared over the full-throttle
-## speed squared), Betaflight's motor order. prop_damage wears props by it.
-func spin_share() -> PackedFloat64Array:
-	if _full_w < 0.0:
-		_full_w = maxf(quad.full_speed(), 1.0)
-	var out := PackedFloat64Array([0, 0, 0, 0])
-	var k := 1.0 / (_full_w * _full_w)
-	for i in 4:
-		out[i] = minf(quad.w[i] * quad.w[i] * k, 1.2)
-	return out
-
-
-## spin_share() into an array of four floats (the hook hands the same one to prop_damage every tick)
+## speed squared), Betaflight's motor order, into an array of four floats (the hook hands the same one to
+## prop_damage every tick, which wears props by it)
 func spin_share_into(out: Array) -> void:
 	if _full_w < 0.0:
 		_full_w = maxf(quad.full_speed(), 1.0)
@@ -334,6 +329,29 @@ func get_air_gust() -> float:
 	return float(plant_params.get("dirty_air_gust", 1.0))
 
 
+## The attitude b turned by the rotation vector rot [rad]: about its own axes, or about the world's (world)
+static func turn(b: Basis, rot: Vector3, world := false) -> Basis:
+	var angle := rot.length()
+	if angle <= 1e-12:
+		return b
+	return Basis(rot / angle, angle) * b if world else b * Basis(rot / angle, angle)
+
+
+## This quad's message to dirty_air (its thrust, props, frame, wash, wake and gust), the same dictionary each call
+func air_msg() -> Dictionary:
+	var q := quad
+	var th := q.thrust
+	var m := _air_msg
+	m["thrust"] = th[0] + th[1] + th[2] + th[3]       # (summed in the rotors' order)
+	m["prop_mm"] = q.prop_radius * 2000.0
+	m["wheelbase_mm"] = q.arm * 2.0 * sqrt(2.0) * 1000.0
+	m["ducted"] = bool(craft.get("ducted", false))
+	m["wash"] = get_air_wash()
+	m["wake"] = get_air_wake()
+	m["gust"] = get_air_gust()
+	return m
+
+
 ## Takes the air at the props for the coming tick from dirty_air's Air node (dirty_air/air.gd), or
 ## clean air for null: the old wake's flow and gusts at each prop, the descent curve and vortex ring
 ## state, and (ground_ceiling) the floor and ceiling effect per prop. Hands dirty_air this quad's
@@ -347,16 +365,7 @@ func apply_air(air: Object, ground_ceiling := true) -> void:
 			quad.thrust_scale[i] = 1.0
 		return
 	var q := quad
-	var th := q.thrust
-	var m := _air_msg
-	m["thrust"] = th[0] + th[1] + th[2] + th[3]       # (summed in the rotors' order)
-	m["prop_mm"] = q.prop_radius * 2000.0
-	m["wheelbase_mm"] = q.arm * 2.0 * sqrt(2.0) * 1000.0
-	m["ducted"] = bool(craft.get("ducted", false))
-	m["wash"] = get_air_wash()
-	m["wake"] = get_air_wake()
-	m["gust"] = get_air_gust()
-	air.call("set_model", m)
+	air.call("set_model", air_msg())
 	var g = air.get("ground")
 	var c = air.get("ceiling")
 	var ts := q.thrust_scale
@@ -484,10 +493,6 @@ func get_loop_hz() -> float:
 	return 1.0 / fc.dt if valid else 0.0
 
 
-func uses_custom_integrator() -> bool:
-	return true
-
-
 ## The modelled quad's mass and inertia on the body (the host re-applies them every tick: the game sets
 ## the mass of its Physics menu again whenever it reloads its settings)
 func apply_mass(body: RigidBody3D) -> void:
@@ -529,26 +534,9 @@ func reset() -> void:
 	_vel = Vector3()
 
 
-func get_camera_angle_deg() -> float:
-	return float(craft.get("camera_angle_deg", 20.0))    # camera uptilt of the real quad
-
-
-func get_camera_fov_deg() -> float:
-	return float(craft.get("camera_fov_deg", 123.0))
-
-
-func get_telemetry() -> Dictionary:
-	var rpm := PackedInt32Array()
-	for i in 4:
-		rpm.append(roundi(quad.w[i] * 60.0 / TAU))
-	return {
-		"rpm": rpm,
-		"vbat": "%.1f V" % (quad.v_batt / _k_volts()),
-		"amps": "%.1f A" % quad.amps,
-		"propwash": "%.2f" % air_wash_level,
-		"pidsum": "%d %d %d" % [roundi(fc.pid_sum[0]), roundi(fc.pid_sum[1]), roundi(fc.pid_sum[2])],
-		"cpu": "%.2f ms/tick" % (cpu_us_per_tick / 1000.0),
-	}
+## Takes the body's velocities again (the game's physics moved it meanwhile); the rotors and the controller go on
+func resync() -> void:
+	_have_state = false
 
 
 ## Stick dict (-1..1; roll right, pitch forward, yaw right, throttle up positive) -> rcData 1000..2000, as the
@@ -584,8 +572,10 @@ func _vibrate(gyro: PackedFloat64Array, dt: float, a: float, sc: float) -> void:
 func integrate_forces(_body: RigidBody3D, state: PhysicsDirectBodyState3D, rc: Dictionary, armed: bool) -> void:
 	if not valid:
 		return
-	var t0 := Time.get_ticks_usec()
 	var tick_dt := state.step
+	if not (tick_dt > 0.0):         # time_scale 0: nothing to integrate (a division by it would be NaN)
+		return
+	var t0 := Time.get_ticks_usec()
 	var basis := state.transform.basis.orthonormalized()
 	var pos := state.transform.origin
 	var pos0 := pos
@@ -612,7 +602,8 @@ func integrate_forces(_body: RigidBody3D, state: PhysicsDirectBodyState3D, rc: D
 	var ang_sum := Vector3()
 	var vib_lvl := 0.0
 	if _vib_on:
-		var sp := spin_share()
+		var sp := [0.0, 0.0, 0.0, 0.0]
+		spin_share_into(sp)
 		for i in 4:
 			_vib[i] = _imb[i] * sp[i]
 			vib_lvl += _vib[i]
@@ -651,14 +642,12 @@ func integrate_forces(_body: RigidBody3D, state: PhysicsDirectBodyState3D, rc: D
 			ud[i] = mq[o + i]        # the command of _mq_n steps ago goes to the motors, this one waits
 			mq[o + i] = clampf((mi - 48.0) / 1999.0, 0.0, 1.0) if mi > 0.0 else 0.0
 		_mq_i = (_mq_i + 1) % _mq_n
-		var acc := q.step(ud, dt, basis, _vel, pos, armed)
+		var acc := q.step(ud, dt, basis, _vel)
 		# attitude update with the new body rates
 		var qo := q.omega
 		var rot_local := Vector3(-qo.y, qo.z, -qo.x) * dt     # (Quad.flu_to_local)
 		ang_sum += basis * rot_local
-		var angle := rot_local.length()
-		if angle > 1e-12:
-			basis = basis * Basis(rot_local / angle, angle)
+		basis = turn(basis, rot_local)
 		_vel += acc * dt
 		pos += _vel * dt
 		_t_us += dt_us

@@ -24,12 +24,12 @@ extends RefCounted
 const BFModel := preload("../../flightmodel/bf_model.gd")
 const Quad := preload("../../flightmodel/bf_quad.gd")
 const Num := preload("num.gd")
+const Craft := preload("craft.gd")
 
 const AIR := "res://dirty_air/air.gd"
 const AIR_CFG := "res://dirty_air/zonemod.cfg"
 const DROP_PER_P99 := 14.5 / 11.3
 const SEEDS := 32                    # seeds 1..SEEDS by default
-const MAX_THREADS := 8
 const TICK_HZ := 500.0
 const HOVER_H := 60.0
 const MAX_EVAL := 8
@@ -98,21 +98,20 @@ static func _f(x: Variant) -> String:
 	return String.num(v, 2 if absf(v) < 10.0 else 1)
 
 
-## Whether the package's calibration was made with another dirty_air than the installed one (or none,
-## with dirty_air installed): {recalibrate, why}
-static func stale(plant: Dictionary) -> Dictionary:
+## Why the package's calibration is not that of the installed dirty_air ("" = it is, or dirty_air is not installed)
+static func stale(plant: Dictionary) -> String:
 	var ver := dirty_air_version()
 	if ver == "":
-		return {"recalibrate": false, "why": ""}
+		return ""
 	var rec: Variant = plant.get("dirty_air_calibration")
 	if not (rec is Dictionary):
-		return {"recalibrate": true, "why": "the prop wash was never calibrated in the game (dirty_air %s is installed)" % ver}
+		return "the prop wash was never calibrated in the game (dirty_air %s is installed)" % ver
 	var was := str(rec.get("dirty_air_version", ""))
 	if was == "":
-		return {"recalibrate": true, "why": "the prop wash was not calibrated (%s); dirty_air %s is installed now" % [str(rec.get("why", "")), ver]}
+		return "the prop wash was not calibrated (%s); dirty_air %s is installed now" % [str(rec.get("why", "")), ver]
 	if was != ver:
-		return {"recalibrate": true, "why": "the prop wash was calibrated with dirty_air %s, %s is installed" % [was, ver]}
-	return {"recalibrate": false, "why": ""}
+		return "the prop wash was calibrated with dirty_air %s, %s is installed" % [was, ver]
+	return ""
 
 
 ## Calibrates. craft, fc, plant: the package's dictionaries (craft.json, fc.json, plant.json); metric: the
@@ -140,6 +139,13 @@ func run(craft: Dictionary, fc: Dictionary, plant: Dictionary, metric: Dictionar
 	if tg.dropcatch == null and tg.calm == null:
 		rec.why = "the logs have neither calm hovers nor drops and catches"
 		return rec
+	# the search always starts from the class defaults, whatever the plant given has (the same result as a build's)
+	var dflt := Craft.defaults(craft)
+	plant = plant.duplicate()
+	plant.turb_base_ms = dflt.turb_base_ms
+	plant.dirty_air_gust = dflt.dirty_air.gust
+	rec.turb_base_ms = plant.turb_base_ms
+	rec.gust = plant.dirty_air_gust
 	var sims: Array = _sims(craft, fc, plant)
 	if sims.is_empty():
 		rec.why = "the model could not be loaded"
@@ -240,27 +246,12 @@ func _search(sims: Array, p: Dictionary, key: String, scen: String, target: floa
 	return best
 
 
-## The scenario's metric with plant values p, mean over the seeds (up to MAX_THREADS threads)
+## The scenario's metric with plant values p, mean over the seeds (each flown by a worker pool task: own model and air)
 func _eval(sims: Array, p: Dictionary, scen: String) -> float:
 	_apply(sims, p)
-	var res := []
-	res.resize(sims.size())
-	var nth := clampi(OS.get_processor_count() - 1, 1, MAX_THREADS)
-	var threads: Array = []
-	for t in mini(nth, sims.size()):
-		var th := Thread.new()
-		th.start(_worker.bind(sims, scen, t, nth, res), Thread.PRIORITY_LOW)
-		threads.append(th)
-	for th in threads:
-		th.wait_to_finish()
+	var res := Num.parallel_for(sims.size(), func(i: int) -> float: return sims[i].run(scen))
 	evals += 1
 	return Num.mean(PackedFloat64Array(res))
-
-
-## Flies every nth seed from first (a worker thread; each seed its own model and air)
-static func _worker(sims: Array, scen: String, first: int, nth: int, res: Array) -> void:
-	for i in range(first, sims.size(), nth):
-		res[i] = sims[i].run(scen)
 
 
 func _apply(sims: Array, p: Dictionary) -> void:
@@ -277,17 +268,19 @@ static func _trace(_s: String) -> void:
 func _sims(craft: Dictionary, fc: Dictionary, plant: Dictionary) -> Array:
 	var dir := OS.get_user_data_dir().path_join("real_quad/calibrate_tmp/%d_%d" % [OS.get_process_id(), Time.get_ticks_usec()])
 	DirAccess.make_dir_recursive_absolute(dir)
+	var out: Array = []
+	var ok := true
 	for pair in [["craft.json", craft], ["fc.json", fc], ["plant.json", plant]]:
 		var f := FileAccess.open(dir.path_join(pair[0]), FileAccess.WRITE)
-		if f == null:
-			return []
+		ok = f != null
+		if not ok:
+			break
 		f.store_string(JSON.stringify(pair[1]))
 		f.close()
-	var out: Array = []
-	for sd in range(1, n_seeds + 1):
+	for sd in (range(1, n_seeds + 1) if ok else []):
 		var m := BFModel.new(dir)
-		if not m.valid:
-			out = []
+		ok = m.valid
+		if not ok:
 			break
 		var sim := Sim.new(m, _air_script.new(), int(sd))
 		sim.cal = self
@@ -295,6 +288,10 @@ func _sims(craft: Dictionary, fc: Dictionary, plant: Dictionary) -> Array:
 	for f in DirAccess.get_files_at(dir):
 		DirAccess.remove_absolute(dir.path_join(f))
 	DirAccess.remove_absolute(dir)
+	if not ok:
+		for s in out:
+			s.dispose()
+		return []
 	return out
 
 
@@ -334,7 +331,6 @@ class Sim:
 	var st := State.new()
 	var dt := 1.0 / TICK_HZ
 	var hover_thr := -0.45
-	var msg := {}
 	var rc := {"roll": 0.0, "pitch": 0.0, "yaw": 0.0, "throttle": -1.0}
 	var sp := [PackedFloat64Array(), PackedFloat64Array()]
 	var gy := [PackedFloat64Array(), PackedFloat64Array()]
@@ -356,22 +352,10 @@ class Sim:
 			model.plant_params[k] = p[k]
 		model.quad.turb_base_ms = float(p.turb_base_ms)
 
-	## The message to dirty_air, as bf_model.apply_air()
-	func _msg() -> Dictionary:
-		var q := model.quad
-		msg["thrust"] = q.thrust[0] + q.thrust[1] + q.thrust[2] + q.thrust[3]
-		msg["prop_mm"] = q.prop_radius * 2000.0
-		msg["wheelbase_mm"] = q.arm * 2.0 * sqrt(2.0) * 1000.0
-		msg["ducted"] = bool(model.craft.get("ducted", false))
-		msg["wash"] = model.get_air_wash()
-		msg["wake"] = model.get_air_wake()
-		msg["gust"] = model.get_air_gust()
-		return msg
-
 	func start() -> void:
 		model.quad.rng.seed = seed_n
 		if air != null:
-			air.free_start(_msg(), seed_n)
+			air.free_start(model.air_msg(), seed_n)
 
 	## One physics tick: dirty_air's air for it (as bf_model.apply_air(), floor and ceiling 1), the model,
 	## then the pose integrated as Godot does with the velocities handed back
@@ -381,7 +365,7 @@ class Sim:
 		if air == null:
 			q.has_air = false
 		else:
-			air.free_tick(_msg(), st.xf, st.lin, dt)
+			air.free_tick(model.air_msg(), st.xf, st.lin, dt)
 			q.has_air = true
 			q.air_vel = air.wake_flow
 			q.air_mean = air.descent_mean
@@ -392,12 +376,7 @@ class Sim:
 				q.air_axial[i] = float(ax[j])
 				q.air_fluct[i] = float(fl[j])
 		model.integrate_forces(null, st, rc, true)
-		var b := st.xf.basis
-		var a := st.ang * dt
-		var an := a.length()
-		if an > 1e-12:
-			b = Basis(a / an, an) * b
-		st.xf = Transform3D(b.orthonormalized(), st.xf.origin + st.lin * dt)
+		st.xf = Transform3D(BFModel.turn(st.xf.basis, st.ang * dt, true).orthonormalized(), st.xf.origin + st.lin * dt)
 
 	func rates() -> Vector3:
 		return Quad.local_to_flu(st.xf.basis.inverse() * st.ang) * (180.0 / PI)
@@ -498,38 +477,3 @@ class Sim:
 			out.append(sqrt(s / (2 * n)))
 			i0 += step
 		return out
-
-
-## report.md (md) with the record's calibration in place of the one there: the line under "What the logs
-## cover", the rows of the gust and the calm turbulence (Measured or Class defaults), the section
-static func report_md(md: String, rec: Dictionary) -> String:
-	var rep: RefCounted = load("res://real_quad/logfit/fit/report.gd").new({})
-	rep.propwash_calibration(rec)
-	var lines := Array(md.split("\n"))
-	var out: Array = []
-	var i := 0
-	var drop_rows := ["| dirty_air gust |", "| Calm-air turbulence |", "| dirty_air wash/wake |"]
-	var table := ""
-	while i < lines.size():
-		var l: String = lines[i]
-		if l.begins_with("- Prop wash calibrated") or l.begins_with("- Prop wash not calibrated"):
-			out.append("- " + summary(rec))
-		elif drop_rows.any(func(r): return l.begins_with(r)):
-			pass
-		elif l == "## Prop wash calibration":
-			while i + 1 < lines.size() and not lines[i + 1].begins_with("## "):
-				i += 1
-			out.append(l)
-			out.append_array(rep.sections[0][1])
-			out.append("")
-		else:
-			if l.begins_with("## "):
-				table = l
-			# the end of a table: its new rows first
-			if l == "" and out.size() > 0 and str(out[-1]).begins_with("|"):
-				var rows: Array = rep.measured if table == "## Measured" else rep.defaults if table == "## Class defaults and assumptions" else []
-				for r in rows:
-					out.append("| %s | %s | %s |" % r)
-			out.append(l)
-		i += 1
-	return "\n".join(out)
