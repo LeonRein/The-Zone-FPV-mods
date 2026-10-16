@@ -332,7 +332,6 @@ class Sim:
 	var st := State.new()
 	var dt := 1.0 / TICK_HZ
 	var hover_thr := -0.45
-	var msg := {}
 	var rc := {"roll": 0.0, "pitch": 0.0, "yaw": 0.0, "throttle": -1.0}
 	var sp := [PackedFloat64Array(), PackedFloat64Array()]
 	var gy := [PackedFloat64Array(), PackedFloat64Array()]
@@ -353,27 +352,15 @@ class Sim:
 			model.plant_params[k] = p[k]
 		model.quad.turb_base_ms = float(p.turb_base_ms)
 
-	## The message to dirty_air, as bf_model.apply_air()
-	func _msg() -> Dictionary:
-		var q := model.quad
-		msg["thrust"] = q.thrust[0] + q.thrust[1] + q.thrust[2] + q.thrust[3]
-		msg["prop_mm"] = q.prop_radius * 2000.0
-		msg["wheelbase_mm"] = q.arm * 2.0 * sqrt(2.0) * 1000.0
-		msg["ducted"] = bool(model.craft.get("ducted", false))
-		msg["wash"] = model.get_air_wash()
-		msg["wake"] = model.get_air_wake()
-		msg["gust"] = model.get_air_gust()
-		return msg
-
 	func start() -> void:
 		model.quad.rng.seed = seed_n
-		air.free_start(_msg(), seed_n)
+		air.free_start(model.air_msg(), seed_n)
 
 	## One physics tick: dirty_air's air for it (as bf_model.apply_air(), floor and ceiling 1), the model,
 	## then the pose integrated as Godot does with the velocities handed back
 	func tick() -> void:
 		var q := model.quad
-		air.free_tick(_msg(), st.xf, st.lin, dt)
+		air.free_tick(model.air_msg(), st.xf, st.lin, dt)
 		q.thrust_scale.fill(1.0)
 		q.has_air = true
 		q.air_vel = air.wake_flow
@@ -385,12 +372,7 @@ class Sim:
 			q.air_axial[i] = float(ax[j])
 			q.air_fluct[i] = float(fl[j])
 		model.integrate_forces(null, st, rc, true)
-		var b := st.xf.basis
-		var a := st.ang * dt
-		var an := a.length()
-		if an > 1e-12:
-			b = Basis(a / an, an) * b
-		st.xf = Transform3D(b.orthonormalized(), st.xf.origin + st.lin * dt)
+		st.xf = Transform3D(BFModel.turn(st.xf.basis, st.ang * dt, true).orthonormalized(), st.xf.origin + st.lin * dt)
 
 	func rates() -> Vector3:
 		return Quad.local_to_flu(st.xf.basis.inverse() * st.ang) * (180.0 / PI)

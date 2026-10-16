@@ -48,7 +48,7 @@ var _gs = null                      # the game's ZGamestate autoload
 var _zs = null                      # the game's ZSettings autoload (RATES)
 var focus_override := 0             # tests: 1 = the game's window has focus, -1 = it has not, 0 = ask the window
 var _rates_mode := "game"           # the drone's rates setting
-var _rates_key = []                 # the game's rates last handed to the model
+var _rates_key := []                # the game's rates (type, roll, pitch, yaw) last handed to the model
 var _drag_key := Vector3(-1, -1, -1)   # the game's drag multipliers last handed to the model (-1: none yet)
 var _orig_body := {}                # body properties restored when switching back to the game's physics (BODY_PROPERTIES)
 var _gen := -1                      # mod.generation the model was last given its settings for
@@ -68,23 +68,16 @@ var _bat_ok := false                # battery_sag's Battery has drive()
 var _handler: Node = null           # the race handler
 var _handler_api := false           # ... and it has an api
 var _kept: RefCounted = null        # the model put aside for a pause or a turtle flip (its rotors and controller go on after)
-var _rates_type = null              # the game's rates last handed to the model (type, roll, pitch, yaw), as _rates_key was
-var _rates_roll = null
-var _rates_pitch = null
-var _rates_yaw = null
 var _spin := [0.0, 0.0, 0.0, 0.0]   # the rotors' spin handed to prop_damage
 
 
-static func find_mod(tree: SceneTree) -> Node:
-	return tree.root.get_node_or_null("ZoneMods/real_quad") if tree != null else null
-
-
-func _init(p_host: RigidBody3D, p_mod: Node) -> void:
+## (Without the mod node, mod stays null and the hook does nothing: the game's own quad.)
+func _init(p_host: RigidBody3D) -> void:
 	host = p_host
-	mod = p_mod
 
 
 func ready() -> void:
+	mod = host.get_tree().root.get_node_or_null("ZoneMods/real_quad")
 	_gs = host.get_node_or_null("/root/ZGamestate")
 	_zs = host.get_node_or_null("/root/ZSettings")
 	if host.has_signal("teleported"):
@@ -100,6 +93,8 @@ func ready() -> void:
 
 ## Before the game's physics step
 func before_physics() -> void:
+	if mod == null:
+		return
 	var vid := _vehicle_id()
 	var want := _wanted_model_id(vid)
 	_set_model(want, _put_aside())
@@ -237,16 +232,9 @@ func _apply_game_settings() -> void:
 	if _rates_mode == "game" and _zs != null:
 		var r = _zs.get("RATES")
 		if r is Dictionary:
-			var t = r.get("type")
-			var ro = r.get("roll")
-			var pi = r.get("pitch")
-			var ya = r.get("yaw")
-			if _rates_key.is_empty() or t != _rates_type or ro != _rates_roll or pi != _rates_pitch or ya != _rates_yaw:
-				_rates_key = [t]       # (non-empty: handed over once)
-				_rates_type = t
-				_rates_roll = ro
-				_rates_pitch = pi
-				_rates_yaw = ya
+			var key := [r.get("type"), r.get("roll"), r.get("pitch"), r.get("yaw")]
+			if key != _rates_key:
+				_rates_key = key
 				model.set_game_rates(r)
 
 

@@ -245,7 +245,5 @@ static func package_craft(c: Dictionary) -> Dictionary:
 		out.top_speed_kmh = float(c.top_speed_kmh)
 	out.ducted = bool(c.ducted)
 	out["class"] = c["class"]
-	out.camera_angle_deg = 20
-	out.camera_fov_deg = 123
 	out.package_format = PACKAGE_FORMAT
 	return out

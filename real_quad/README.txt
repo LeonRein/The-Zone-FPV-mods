@@ -99,9 +99,9 @@ MODELS
   A model is a folder in real_quad/models with three files:
     craft.json  who it is: id, name, zone_vehicle_id (the game's drone it
                 is made for), weight, linear_drag (the default of the
-                drag setting) and a description of the hardware. Its
-                camera angle and fov are not used: the game's camera
-                settings apply
+                drag setting) and a description of the hardware. (The
+                camera_angle_deg and camera_fov_deg of older models are
+                ignored: the game's camera settings apply)
     fc.json     the real flight controller's settings, from its blackbox
                 header: the loop rate, rates, PIDs, filters...
     plant.json  the quad worked out from the logs: motors, thrust and
