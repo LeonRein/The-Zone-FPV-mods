@@ -18,8 +18,9 @@ const BAND := [1.0, 30.0]
 const YAW_MIN_R2 := 0.5
 
 
-## One entry per usable window: {reg {axis: [x0, x1]}, z {axis: [z0, z1]}, y [3], m mask}.
-static func rows_for(L: Flight, wsim: Array, b: PackedFloat64Array, mask: PackedByteArray, lo: float, hi: float, min_len_s: float = 3.0, edge_s: float = 0.3) -> Array:
+## One entry per usable window: {reg {axis: [x0, x1]}, z {axis: [z0, z1]}, y [3], m mask}; reg and z only of
+## `axes` (the mask m always checks all three).
+static func rows_for(L: Flight, wsim: Array, b: PackedFloat64Array, mask: PackedByteArray, lo: float, hi: float, min_len_s: float = 3.0, edge_s: float = 0.3, axes: Array = AX) -> Array:
 	var fs := L.fs
 	var n := L.n
 	var ok := Num.zeros_mask(n)
@@ -107,6 +108,8 @@ static func rows_for(L: Flight, wsim: Array, b: PackedFloat64Array, mask: Packed
 		var xs := [xr, xp, xq]
 		var sc := [1e-6, 1e-6, 1e-3]
 		for k in 3:
+			if not AX[k] in axes:
+				continue
 			var c0 := PackedFloat64Array()
 			var c1 := PackedFloat64Array()
 			var z1 := PackedFloat64Array()
@@ -167,10 +170,14 @@ static func _window_sums(r: Dictionary, ax: String, k: int) -> PackedFloat64Arra
 	return s
 
 
-static func iv_fit(rows: Array) -> Dictionary:
+## Per axis of `axes`: {coef, r2, n, windows, se, blocks, spread_blocks}. An axis without excitation (its
+## instruments all zero, e.g. no yaw stick at all: a singular system) or without data is left out.
+static func iv_fit(rows: Array, axes: Array = AX) -> Dictionary:
 	var res := {}
 	for k in 3:
 		var ax: String = AX[k]
+		if not ax in axes:
+			continue
 		var sel: Array = rows.filter(func(r): return (r.m as PackedByteArray).count(1) > 100)
 		if sel.is_empty():
 			continue
@@ -180,6 +187,8 @@ static func iv_fit(rows: Array) -> Dictionary:
 			for q in 6:
 				tot[q] += s[q]
 		var c := _solve2(tot[0], tot[1], tot[2], tot[3], tot[4], tot[5])
+		if c.is_empty() or not (is_finite(c[0]) and is_finite(c[1])):
+			continue
 		# concatenated data for R2 and the 4 blocks
 		var Xc0 := PackedFloat64Array()
 		var Xc1 := PackedFloat64Array()
@@ -233,18 +242,77 @@ static func iv_fit(rows: Array) -> Dictionary:
 	return res
 
 
+const YAW_MAX_SE := 0.25
+
+
+## The yaw entry when the yaw could not be fitted at all (no yaw excitation / no data).
+static func no_fit() -> Dictionary:
+	return {"coef": [0.0, 0.0], "r2": 0.0, "n": 0, "windows": 0, "se": null, "blocks": [], "spread_blocks": null}
+
+
+## Sample masks per session for the fit: [roll/pitch masks, yaw masks or null = the same, yaw source]. With
+## >= 30 s of chirps roll and pitch use the chirp windows; yaw too if a yaw sweep is among them, else the
+## freestyle rest (chirps on roll/pitch only hardly move yaw: its gain and sign would be noise).
+static func masks(uses: Array, chirp_masks: Array, segs: Array, use_chirp: bool) -> Array:
+	var free: Array = []
+	var chp: Array = []
+	for k in uses.size():
+		free.append(Num.mask_and(uses[k], Num.mask_not(chirp_masks[k])))
+		chp.append(Num.mask_and(uses[k], chirp_masks[k]))
+	if not use_chirp:
+		return [free, null, "freestyle"]
+	for s in segs:
+		for ch in s.chirps:
+			if ch.size() > 2 and ch[2] != null and int(ch[2]) == 2:
+				return [chp, null, "chirp"]
+	return [chp, free, "freestyle"]
+
+
+## The IV fit of all axes on the masks of masks(): [fit, windows of the roll/pitch fit, windows of the yaw
+## fit, yaw source]; an axis that could not be fitted is missing from fit. Empty if cancelled.
+static func fit_all(logs: Array, sims: Array, b: PackedFloat64Array, uses: Array, chirp_masks: Array, segs: Array, use_chirp: bool,
+		band: Array, cancel: Callable = Callable()) -> Array:
+	var mk := masks(uses, chirp_masks, segs, use_chirp)
+	var both: bool = mk[1] == null
+	var rr: Array = []
+	for k in logs.size():
+		rr.append_array(rows_for(logs[k], sims[k], b, mk[0][k], band[0], band[1], 3.0, 0.3, AX if both else AX.slice(0, 2)))
+		if cancel.is_valid() and cancel.call():
+			return []
+	var fit := iv_fit(rr, AX if both else AX.slice(0, 2))
+	var n_rp := rr.size()
+	var n_y := n_rp
+	if not both:
+		rr = []
+		for k in logs.size():
+			rr.append_array(rows_for(logs[k], sims[k], b, mk[1][k], band[0], band[1], 3.0, 0.3, AX.slice(2)))
+			if cancel.is_valid() and cancel.call():
+				return []
+		fit.merge(iv_fit(rr, AX.slice(2)), true)
+		n_y = rr.size()
+	return [fit, n_rp, n_y, mk[2]]
+
+
+## The yaw fit is good enough for J_rotor and the motor direction: R2 >= 0.5 and jackknife rel. SE <= 25 %.
+static func yaw_measured(fy: Dictionary) -> bool:
+	return float(fy.r2) >= YAW_MIN_R2 and fy.se != null and float(fy.se) <= YAW_MAX_SE and float(fy.coef[0]) != 0.0
+
+
 ## IV coefficients -> plant parameters: [params {Ixx, Iyy, Izz, J_rotor, rate_damping}, yaw_reversed, yaw_ok].
-static func to_params(fit: Dictionary, kT: float, arm: float, izz_over_ixy: float, use_damping: bool, j_default: float) -> Array:
+## Size and direction of the yaw only if the yaw fit is good (yaw_measured()), else J_rotor = j_default and
+## the direction rev_default. yaw_damping (-1: as use_damping, 0 / 1): the yaw damping term is used.
+static func to_params(fit: Dictionary, kT: float, arm: float, izz_over_ixy: float, use_damping: bool, j_default: float,
+		rev_default: bool = true, yaw_damping: int = -1) -> Array:
 	var out := {}
 	out.Ixx = kT * arm / (float(fit.roll.coef[0]) * 1e-6)
 	out.Iyy = kT * arm / (float(fit.pitch.coef[0]) * 1e-6)
 	out.Izz = izz_over_ixy * 0.5 * (out.Ixx + out.Iyy)
-	var gy := float(fit.yaw.coef[0]) * 1e-3
-	var rev := gy < 0.0
-	var yaw_ok := float(fit.yaw.r2) >= YAW_MIN_R2
+	var fy: Dictionary = fit.get("yaw", no_fit())
+	var gy := float(fy.coef[0]) * 1e-3
+	var yaw_ok := yaw_measured(fy)
+	var rev := gy < 0.0 if yaw_ok else rev_default
 	out.J_rotor = absf(gy) * out.Izz if yaw_ok else j_default
-	var rd: Array = []
-	for ax in AX:
-		rd.append(maxf(0.0, -float(fit[ax].coef[1])) if use_damping else 0.0)
-	out.rate_damping = rd
+	var yd := use_damping if yaw_damping < 0 else yaw_damping == 1
+	out.rate_damping = [maxf(0.0, -float(fit.roll.coef[1])) if use_damping else 0.0,
+		maxf(0.0, -float(fit.pitch.coef[1])) if use_damping else 0.0, maxf(0.0, -float(fy.coef[1])) if yd else 0.0]
 	return [out, rev, yaw_ok]

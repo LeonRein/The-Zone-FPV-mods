@@ -69,8 +69,8 @@ func zm_init(core: Node, _dir: String) -> void:
 	_say("real_quad %s" % VERSION)
 	# listed from the real folder: the game's own file list does not know a folder next to its exe
 	model_roots = PackedStringArray([_game_dir().path_join("models"), user_root])
+	_make_manager()                  # first: it puts back the package of a job the game's closing cut short
 	_scan_models()
-	_make_manager()
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	read_settings()
 	_say("ground and ceiling effect %s, %d mAh for a model whose package gives no pack size" % [
@@ -237,6 +237,24 @@ func models_changed(id := "") -> void:
 		registry._cache.erase(id)       # the registry keeps a loaded model until its folder moves
 		registry._failed.erase(id)
 	rescan_models()
+
+
+## The game is closing: a running build is cancelled and its thread waited for (a Thread must not be dropped
+## running), the manager window's log reader too
+func _shutdown() -> void:
+	if manager != null:
+		manager.shutdown()
+	if _builder != null and is_instance_valid(_builder) and _builder.has_method("shutdown"):
+		_builder.shutdown()
+
+
+func _exit_tree() -> void:
+	_shutdown()
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_CLOSE_REQUEST:
+		_shutdown()
 
 
 func _job_finished(rec: Dictionary) -> void:

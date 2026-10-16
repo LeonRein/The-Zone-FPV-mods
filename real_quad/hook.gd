@@ -36,6 +36,9 @@ const RPM_META := "motor_rpm"
 # The game's own top of the motor scale (22.2 V * 1400 KV, player_rigid_body.gd MAX_MOTOR_RPM): its sound's pitch and
 # volume and the motor speed other players get are current_motor_rpm / this
 const GAME_MAX_RPM := 31080.0
+# What the model changes on the body (BFModel.configure_body()), saved when it takes the quad and put back
+const BODY_PROPERTIES := ["inertia", "can_sleep", "linear_damp_mode", "angular_damp_mode", "linear_damp", "angular_damp",
+	"center_of_mass_mode", "center_of_mass", "gravity_scale"]
 
 var host: RigidBody3D
 var mod: Node                       # the real_quad mod (main.gd)
@@ -47,13 +50,15 @@ var focus_override := 0             # tests: 1 = the game's window has focus, -1
 var _rates_mode := "game"           # the drone's rates setting
 var _rates_key = []                 # the game's rates last handed to the model
 var _drag_key := Vector3(-1, -1, -1)   # the game's drag multipliers last handed to the model (-1: none yet)
-var _orig_body := {}                # body properties restored when switching back to the game's physics
+var _orig_body := {}                # body properties restored when switching back to the game's physics (BODY_PROPERTIES)
 var _gen := -1                      # mod.generation the model was last given its settings for
 var _vid := ""                      # vehicle the settings were looked up for
 var _bat_key := ""                  # battery_sag's pack this model drives ("vehicle model", "" = none)
 var _key_vid := ""                  # what _bat_key's text is made of ...
 var _key_model: RefCounted = null
 var _key_text := ""                 # ... the text made of them
+var _own_key := ""                  # vehicle and model object the real_quad pack (without battery_sag) is for
+var _osd_rate_set := false          # curr_max_rate on the OSD is a value written here
 # The other mods' nodes, looked for again only when the one found is gone (all of them every tick otherwise)
 var _air_n: Node = null
 var _props_n: Node = null
@@ -85,7 +90,10 @@ func ready() -> void:
 		host.connect("teleported", func() -> void:
 			if model != null:
 				model.reset()
-				mod.own_pack_reset())
+				# a respawn gives a fresh pack only while disarmed (battery_sag's new_pack_on_respawn default);
+				# battery_sag has its own rules for its pack
+				if not bool(host.call("is_armed")):
+					mod.own_pack_reset())
 
 
 ## Before the game's physics step
@@ -93,7 +101,7 @@ func before_physics() -> void:
 	_guard_race_upload()
 	var vid := _vehicle_id()
 	var want := _wanted_model_id(vid)
-	_set_model(want)
+	_set_model(want, _put_aside())
 	if model != null and (mod.generation != _gen or vid != _vid):
 		_apply_settings(vid)
 		_gen = mod.generation
@@ -143,28 +151,33 @@ func _vehicle_id() -> String:
 
 ## The model package that should fly the drone right now, "" = the game's physics.
 func _wanted_model_id(vid: String) -> String:
-	if not mod.on or _gs == null or _gs.is_paused or host.get("turtle_mode_active") == true:
+	if not mod.on or _gs == null or _put_aside():
 		return ""
 	return mod.model_id_for(vid)
 
 
+## The game's physics fly for a moment (the game is paused, the quad is on its back in turtle mode): the
+## same model goes on after, with the same pack
+func _put_aside() -> bool:
+	return _gs != null and (_gs.is_paused or host.get("turtle_mode_active") == true)
+
+
 ## Switches to the model with this id ("" = back to the game's physics). Loads and caches the
-## package and applies its mass and inertia.
-func _set_model(id: String) -> void:
-	var cur := str(model.get_id()) if model != null else ""
-	if id == cur:
-		return
+## package and applies its mass and inertia. A package rebuilt under the same id is another object: it is
+## switched to as well, in mid-flight. aside: the game's physics fly only for a moment (pause, turtle mode),
+## so the pack stays.
+func _set_model(id: String, aside := false) -> void:
 	var m = mod.registry.load_model(id) if id != "" else null
+	if m != null and m == model:
+		return
 	if m == null:
 		if active:
-			_deactivate()
+			_deactivate(aside)
 		return
 	if not active:                 # a direct model-to-model switch keeps the saved original body
-		_orig_body = {
-			"inertia": host.inertia, "can_sleep": host.can_sleep,
-			"linear_damp_mode": host.linear_damp_mode, "angular_damp_mode": host.angular_damp_mode,
-			"linear_damp": host.linear_damp, "angular_damp": host.angular_damp,
-		}
+		_orig_body = {}
+		for key: String in BODY_PROPERTIES:
+			_orig_body[key] = host.get(key)
 	model = m
 	_gen = -1
 	model.reset()                  # resyncs from the body's current velocities
@@ -173,11 +186,13 @@ func _set_model(id: String) -> void:
 	mod.flying(_vehicle_id(), model)
 
 
-func _deactivate() -> void:
+func _deactivate(aside := false) -> void:
 	active = false
 	model = null
 	_release_battery()
-	mod.own_pack.clear()
+	if not aside:
+		mod.own_pack.clear()
+		_own_key = ""
 	host.custom_integrator = false
 	for key: String in _orig_body:
 		host.set(key, _orig_body[key])
@@ -228,12 +243,20 @@ func _apply_game_settings() -> void:
 				model.set_game_rates(r)
 
 
-## The game's max-rate OSD readout (curr_max_rate, every 60 ticks, when its option is on) from the rates in use
+## The game's max-rate OSD readout (curr_max_rate, every 60 ticks, when its option is on) from the rates in use.
+## With the option off the value written earlier goes (the game, or flight_controller's step it replaced, no longer
+## updates it).
 func _max_rate_osd() -> void:
-	if Engine.get_physics_frames() % 60 != 0 or _gs == null or _gs.get("enable_current_max_rate_osd") != true:
+	if Engine.get_physics_frames() % 60 != 0 or _gs == null:
+		return
+	if _gs.get("enable_current_max_rate_osd") != true:
+		if _osd_rate_set:
+			_osd_rate_set = false
+			_gs.OSD_VALUES.erase("curr_max_rate")
 		return
 	var sp: Vector4 = host.get("stick_pos")
 	_gs.OSD_VALUES["curr_max_rate"] = "%.0f" % model.current_max_rate_dps({"roll": sp.x, "pitch": sp.y, "yaw": sp.w})
+	_osd_rate_set = true
 
 
 ## The vehicle's own settings (propwash, drag, rates) for the model
@@ -271,6 +294,11 @@ func _apply_battery(vid: String) -> void:
 	var bat := _battery_node()
 	if bat == null or not _bat_ok:
 		_bat_key = ""
+		# a new pack when the vehicle or the model changes (not for a pause, a turtle flip or a respawn in flight)
+		var own_key := "%s %d" % [vid, model.get_instance_id()]
+		if own_key != _own_key:
+			_own_key = own_key
+			mod.own_pack_reset()
 		model.use_identified_sag()
 		mod.own_pack_step(model, amps, c.y, c.z)
 		return

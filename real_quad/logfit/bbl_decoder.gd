@@ -33,9 +33,11 @@ extends RefCounted
 ##   offset, size byte range of the session in the file
 ##
 ## Frame validity as in the reference viewers: a frame counts only if the byte after it starts another
-## frame (or the log ends there) and it is at most 256 bytes long; otherwise it is dropped. Main frames
-## must also move forward from the last good one, iteration by less than 5000 and time by less than 10 s;
-## after a bad one P frames are skipped until the next good I frame. A gap longer than that (a lost
+## frame (or the log ends there) and it is at most 256 bytes long; otherwise it is dropped. Any dropped
+## frame (also an S, G, H or E one) or a byte that starts no frame breaks the main stream: P frames are
+## skipped until the next good I frame. An I frame must move forward from the last good main frame,
+## iteration by less than 5000 and time by less than 10 s; a P frame must not jump forward by more than
+## that, else it breaks the stream too. A gap longer than that (a lost
 ## stretch of the log) is only crossed where a logging-resume event announces it, as the firmware writes
 ## when logging pauses; elsewhere the rest of the session is refused (stats.desync shows it).
 ## Data versions 1 and 2 (they differ in the tag8_4s16 encoding) are both read; version 1 follows the
@@ -208,8 +210,12 @@ func cancel() -> void:
 
 
 func _decode_all(bytes: PackedByteArray) -> Array:
-	cancel_requested = false
+	# A cancel() that came before (while the file was being read) is kept: it ends this decode at once.
 	was_cancelled = false
+	if cancel_requested:
+		was_cancelled = true
+		cancel_requested = false
+		return []
 	var total := bytes.size()
 	var pad := PackedByteArray()
 	pad.resize(PAD)
@@ -222,6 +228,7 @@ func _decode_all(bytes: PackedByteArray) -> Array:
 		var end: int = starts[k + 1] if k + 1 < starts.size() else total
 		sessions.append(_decode_session(k, starts[k], end, total))
 		if was_cancelled:
+			cancel_requested = false
 			break
 	if progress.is_valid() and not was_cancelled:
 		progress.call(total, total)
@@ -375,6 +382,7 @@ func _decode_session(index: int, start: int, end: int, total: int) -> Dictionary
 	while pos < end and main_n > 0:
 		var c := data[pos]
 		if is_start[c] == 0:
+			main_valid = false           # a byte that starts no frame: the main stream is broken until the next I
 			pos += 1
 			continue
 		frames_seen += 1
@@ -420,12 +428,13 @@ func _decode_session(index: int, start: int, end: int, total: int) -> Dictionary
 				ev = _read_event(q)
 				q = _vp if not ev.is_empty() else -1
 		var ok := q >= 0 and q <= end and q - fstart <= MAX_FRAME_LENGTH
-		if ok and q < end and is_start[data[q]] == 0 and not (c == _E and ev.type == EV_LOG_END):
+		if ok and q < end and is_start[data[q]] == 0 and not (c == _E and ev.type == EV_LOG_END and not ev.has("ignored")):
 			ok = false
 		if not ok:
+			# Any damaged frame (not only a main one) breaks the main stream until the next I frame,
+			# as in the reference parsers.
 			stats.corrupt += 1
-			if is_main:
-				main_valid = false
+			main_valid = false
 			pos = fstart + 1
 			continue
 		pos = q
@@ -433,11 +442,15 @@ func _decode_session(index: int, start: int, end: int, total: int) -> Dictionary
 			_I, _P:
 				var iter := cur[iter_idx] if iter_idx >= 0 else 0
 				var t := cur[time_idx] if time_idx >= 0 else 0
-				var sane := last_iter < 0 or (iter >= last_iter and iter < last_iter + MAX_ITERATION_JUMP and t >= last_time and t < last_time + MAX_TIME_JUMP_US)
-				if c == _P and not (main_valid and sane):
-					stats.desync += 1
-					continue
-				if not sane:
+				if c == _P:
+					# as the reference: only a jump forward is checked (not backwards), and a P frame
+					# that fails it breaks the main stream until the next I frame
+					if main_valid and (t > last_time + MAX_TIME_JUMP_US or iter > last_iter + MAX_ITERATION_JUMP):
+						main_valid = false
+					if not main_valid:
+						stats.desync += 1
+						continue
+				elif last_iter >= 0 and not (iter >= last_iter and iter < last_iter + MAX_ITERATION_JUMP and t >= last_time and t < last_time + MAX_TIME_JUMP_US):
 					stats.desync += 1
 					main_valid = false
 					continue
@@ -469,6 +482,8 @@ func _decode_session(index: int, start: int, end: int, total: int) -> Dictionary
 				_home[1] = hbuf[1] if hdef.count > 1 else 0
 				stats.H += 1
 			_E:
+				if ev.has("ignored"):
+					continue         # an unknown event kind followed by a frame: skipped, as in the reference
 				ev["at"] = main.rows
 				events.append(ev)
 				stats.E += 1
@@ -797,7 +812,8 @@ func _predict(fd: FrameDef, out: PackedInt64Array, has_history: bool, skipped: i
 		out[i] = v
 
 
-## Event frame after its 'E' at p: {type, ...fields}, empty if damaged or of an unknown kind; _vp = end.
+## Event frame after its 'E' at p: {type, ...fields}; "ignored" is set for an unknown kind or a damaged
+## end-of-log event (the reference parsers skip those without counting them as damage); _vp = end.
 func _read_event(p: int) -> Dictionary:
 	var data := _data
 	var t: int = data[p]
@@ -830,9 +846,9 @@ func _read_event(p: int) -> Dictionary:
 			p = _vp
 		EV_LOG_END:
 			if data.slice(p, p + 10).get_string_from_ascii() != "End of log" or data[p + 10] != 0:
-				return {}
+				ev["ignored"] = true
 			p += 11
 		_:
-			return {}
+			ev["ignored"] = true         # unknown kind: only its type byte is consumed
 	_vp = p
 	return ev

@@ -60,6 +60,8 @@ var _armed := false
 var _t_us: int = 0
 var _next_frame_us: int = 0
 var _rx_frame_us: int = 4000         # from fc.json rx_rate_hz
+var _deadband := 0.0                 # fc.json deadband and yaw_deadband [us]: the sticks' dead zone, taken off the game's sticks
+var _yaw_deadband := 0.0
 var _mq := PackedFloat64Array()      # motor command latency line: a ring of _mq_n commands (4 each)
 var _mq_n: int = 1
 var _mq_i: int = 0
@@ -81,6 +83,8 @@ func _init(p_package_dir: String) -> void:
 	if craft.is_empty() or fc_cfg.is_empty() or plant_params.is_empty():
 		return
 	_rx_frame_us = maxi(1, roundi(1e6 / maxf(float(fc_cfg.get("rx_rate_hz", 250.0)), 1.0)))
+	_deadband = clampf(float(fc_cfg.get("deadband", 0.0)), 0.0, 499.0)
+	_yaw_deadband = clampf(float(fc_cfg.get("yaw_deadband", 0.0)), 0.0, 499.0)
 	quad = Quad.new(plant_params)
 	_cd_area0 = quad.cd_area
 	for k in ["rates_type", "rc_rates", "rates", "rc_expo"]:
@@ -448,6 +452,8 @@ func apply_mass(body: RigidBody3D) -> void:
 		body.inertia = i
 
 
+## (The host, hook.gd, saves what this sets before and puts it back: inertia, can_sleep, the damping, centre
+## of mass and gravity_scale.)
 func configure_body(body: RigidBody3D) -> void:
 	if not valid:
 		return
@@ -497,13 +503,20 @@ func get_telemetry() -> Dictionary:
 	}
 
 
-## Stick dict (-1..1; roll right, pitch forward, yaw right, throttle up positive) -> rcData 1000..2000.
-static func rc_to_rcdata(rc: Dictionary) -> PackedFloat64Array:
-	var roll := clampf(float(rc.get("roll", 0.0)), -1.0, 1.0)
-	var pitch := clampf(float(rc.get("pitch", 0.0)), -1.0, 1.0)
-	var yaw := clampf(float(rc.get("yaw", 0.0)), -1.0, 1.0)
+## Stick dict (-1..1; roll right, pitch forward, yaw right, throttle up positive) -> rcData 1000..2000, as the
+## controller's rx_frame() takes it: with the sticks' deadband taken off (Betaflight's rcCommand: deadband and
+## yaw_deadband [us] come off the deflection first, and the controller divides by 500 - deadband). Replaying a
+## log needs none of this: the logged rcCommand has it done already.
+static func rc_to_rcdata(rc: Dictionary, deadband := 0.0, yaw_deadband := 0.0) -> PackedFloat64Array:
+	var out := PackedFloat64Array([1500.0, 1500.0, 1500.0, 1000.0])
+	var keys := ["roll", "pitch", "yaw"]
+	for a in 3:
+		var us := clampf(float(rc.get(keys[a], 0.0)), -1.0, 1.0) * 500.0
+		var db := yaw_deadband if a == 2 else deadband
+		out[a] = 1500.0 + signf(us) * maxf(absf(us) - db, 0.0)
 	var thr := clampf((float(rc.get("throttle", -1.0)) + 1.0) * 0.5, 0.0, 1.0)
-	return PackedFloat64Array([1500.0 + 500.0 * roll, 1500.0 + 500.0 * pitch, 1500.0 + 500.0 * yaw, 1000.0 + 1000.0 * thr])
+	out[3] = 1000.0 + 1000.0 * thr
+	return out
 
 
 # Out-of-balance props into the gyro (deg/s): each damaged rotor's tone at its own speed, rotating as the
@@ -538,7 +551,7 @@ func integrate_forces(_body: RigidBody3D, state: PhysicsDirectBodyState3D, rc: D
 	if armed != _armed:
 		fc.arm(armed)
 		_armed = armed
-	var rcdata := rc_to_rcdata(rc)
+	var rcdata := rc_to_rcdata(rc, _deadband, _yaw_deadband)
 	var n_sub := maxi(1, roundi(tick_dt / fc.dt))
 	var dt := tick_dt / float(n_sub)
 	var gyro := PackedFloat64Array([0, 0, 0])

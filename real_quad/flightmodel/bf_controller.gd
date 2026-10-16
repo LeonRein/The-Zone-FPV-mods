@@ -507,7 +507,9 @@ func _throttle_lookup(tmp: int) -> float:
 	return lo + (hi - lo) * rem / 1000.0
 
 
-## New RC frame. rc_data = [roll, pitch, yaw, throttle] in 1000..2000 (AETR order).
+## New RC frame. rc_data = [roll, pitch, yaw, throttle] in 1000..2000 (AETR order), the sticks with the
+## deadband already taken off (Betaflight's rcCommand + 1500: a log has rcCommand, the game's sticks go through
+## bf_model.rc_to_rcdata()): process_rc_command() divides by 500 - deadband.
 func rx_frame(rc_data: PackedFloat64Array, frame_t_us: int) -> void:
 	var delta: int = frame_t_us - last_rx_time_us if last_rx_time_us != 0 else 0
 	last_rx_time_us = frame_t_us

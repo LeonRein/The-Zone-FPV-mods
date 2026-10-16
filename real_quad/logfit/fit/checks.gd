@@ -195,8 +195,10 @@ static func resting_voltage(L: Flight) -> float:
 	return Num.median(v)
 
 
+## Cell counts n with v / n in the resting band of the pack: LiPo / LiHV 3.3-4.45, Li-ion 2.8-4.25 V; pack ""
+## (not known yet, e.g. before the form is filled) the widest band 2.8-4.45 V.
 static func cells_candidates(v: float, pack: String = "lipo") -> Array:
-	var lo := 2.8 if pack == "liion" else 3.3
+	var lo := 2.8 if pack == "liion" or pack == "" else 3.3
 	var hi := 4.25 if pack == "liion" else 4.45
 	var out: Array = []
 	for n in range(1, 13):
@@ -279,8 +281,11 @@ static func _stuck(x: PackedFloat64Array, armed: PackedByteArray, thr: PackedFlo
 
 ## Sensor plausibility of one session (contract 3.6): {issues, drop_acc, drop_vbat, skip, skip_fit,
 ## metrics}. The caller applies the drops.
-static func sanity(L: Flight, hover_thr: float, cells: int, pack: String, erpm_limit_hz: float) -> Dictionary:
+## cancel (optional): polled every 10 000 samples; when it answers true the result is incomplete (the caller
+## stops anyway).
+static func sanity(L: Flight, hover_thr: float, cells: int, pack: String, erpm_limit_hz: float, cancel: Callable = Callable()) -> Dictionary:
 	var nm := L.name
+	var cc := cancel.is_valid()
 	var iss: Array = []
 	var res := {"issues": iss, "drop_acc": false, "drop_vbat": false, "skip": null, "skip_fit": null, "metrics": {}}
 	var met: Dictionary = res.metrics
@@ -288,8 +293,12 @@ static func sanity(L: Flight, hover_thr: float, cells: int, pack: String, erpm_l
 	var fl := PackedByteArray()
 	fl.resize(L.n)
 	for i in L.n:
+		if cc and i % 10000 == 0 and cancel.call():
+			return res
 		fl[i] = 1 if L.armed[i] != 0 and L.throttle[i] > 0.05 else 0
 	var ground := _ground(L, hover_thr)
+	if cc and cancel.call():
+		return res
 	# ACC
 	if L.has_acc():
 		var ax: PackedFloat64Array = L.acc[0]
@@ -301,6 +310,8 @@ static func sanity(L: Flight, hover_thr: float, cells: int, pack: String, erpm_l
 			var sx := PackedFloat64Array()
 			var sy := PackedFloat64Array()
 			for i in L.n:
+				if cc and i % 10000 == 0 and cancel.call():
+					return res
 				if ground[i] != 0:
 					an.append(sqrt(ax[i] * ax[i] + ay[i] * ay[i] + az[i] * az[i]))
 					sx.append(ax[i])
@@ -324,6 +335,8 @@ static func sanity(L: Flight, hover_thr: float, cells: int, pack: String, erpm_l
 		if nfl > 0:
 			var nc := 0
 			for i in L.n:
+				if cc and i % 10000 == 0 and cancel.call():
+					return res
 				if fl[i] != 0 and (absf(ax[i]) >= 0.98 * lim or absf(ay[i]) >= 0.98 * lim or absf(az[i]) >= 0.98 * lim):
 					nc += 1
 			var clip := float(nc) / nfl
@@ -344,6 +357,8 @@ static func sanity(L: Flight, hover_thr: float, cells: int, pack: String, erpm_l
 			res.skip = "gyro axis %s dead (std < 0.5 deg/s): sensor fault" % "/".join(dead)
 		var nc := 0
 		for i in L.n:
+			if cc and i % 10000 == 0 and cancel.call():
+				return res
 			if L.armed[i] != 0 and (absf(L.gyro[0][i]) >= 1900.0 or absf(L.gyro[1][i]) >= 1900.0 or absf(L.gyro[2][i]) >= 1900.0):
 				nc += 1
 		var clip := float(nc) / narm
@@ -351,6 +366,8 @@ static func sanity(L: Flight, hover_thr: float, cells: int, pack: String, erpm_l
 		if clip > 0.02:
 			iss.append(issue("gyro_clip", "warning", "%s: gyro at 1900 deg/s or more in %.1f %% of the flight (excluded from the rotation fit)" % [nm, clip * 100.0], "", nm))
 	# stuck values
+	if cc and cancel.call():
+		return res
 	var stuck: Array = []
 	for i in 3:
 		if _stuck(L.gyro[i], L.armed, L.throttle, L.fs) > 0.0:
@@ -371,10 +388,14 @@ static func sanity(L: Flight, hover_thr: float, cells: int, pack: String, erpm_l
 	if not stuck.is_empty() and res.skip == null:
 		res.skip = "%s constant for > 2 s while the throttle changes: corrupt log" % ", ".join(stuck)
 	# eRPM dropouts and glitches
+	if cc and cancel.call():
+		return res
 	if L.has_hz() and narm > 0:
 		var idle := float(L.hint("motor_idle", 550) if L.hint("motor_idle", 550) != 0 else 550) / 10000.0
 		var bad := PackedFloat64Array([0, 0, 0, 0])
 		for i in L.n:
+			if cc and i % 10000 == 0 and cancel.call():
+				return res
 			if L.armed[i] == 0:
 				continue
 			for m in 4:
@@ -398,6 +419,8 @@ static func sanity(L: Flight, hover_thr: float, cells: int, pack: String, erpm_l
 			iss.append(issue("erpm_dropouts", "warning", "%s: eRPM dropouts/glitches in %.1f %% of the flight on motor %d" % [nm, worst * 100.0, wm + 1],
 				"check the ESC telemetry (bidirectional DShot) and the motor wiring", nm))
 	# vbat
+	if cc and cancel.call():
+		return res
 	if L.has_vbat():
 		var vr := resting_voltage(L)
 		met.vbat_rest = Num.pyround(vr, 2) if vr > 0.0 else null
@@ -448,6 +471,25 @@ static func sanity(L: Flight, hover_thr: float, cells: int, pack: String, erpm_l
 
 # --------------------------------------------------------- consistency --
 
+## null if one cell count fits every resting voltage of rest, else the sorted guesses (cell counts).
+static func _packs_differ(rest: PackedFloat64Array, pack: String) -> Variant:
+	if rest.is_empty():
+		return null
+	var common: Array = cells_candidates(rest[0], pack)
+	for v in rest:
+		var c := cells_candidates(v, pack)
+		common = common.filter(func(x): return x in c)
+	if not common.is_empty():
+		return null
+	var guesses := {}
+	for v in rest:
+		var g: int = cells_guess(v, pack)[0]
+		if g > 0:
+			guesses[g] = true
+	var gs: Array = guesses.keys()
+	gs.sort()
+	return gs
+
 ## Contract 2.3 over the used sessions: issues (errors refuse the run).
 static func consistency(sessions: Array, same_quad: bool = false, pack: String = "lipo") -> Array:
 	var out: Array = []
@@ -485,26 +527,24 @@ static func consistency(sessions: Array, same_quad: bool = false, pack: String =
 		var msg := "logs of different quads? " + "; ".join(what)
 		out.append(issue("board_differs", "warning" if same_quad else "error", msg + (" (accepted: 'these logs are all from this quad')" if same_quad else ""),
 			"pick logs of this quad only, or confirm 'these logs are all from this quad (FC replaced / renamed)' (craft.json \"same_quad\": true or --same-quad)"))
-	var common: Variant = null
-	var guesses := {}
-	var any := false
+	var rest := PackedFloat64Array()
 	for L: Flight in sessions:
 		var v := resting_voltage(L)
 		if v > 0.0:
-			any = true
-			var c := cells_candidates(v, pack)
-			if common == null:
-				common = c
-			else:
-				common = common.filter(func(x): return x in c)
-			var g: int = cells_guess(v, pack)[0]
-			if g > 0:
-				guesses[g] = true
-	if any and (common as Array).is_empty():
-		var gs: Array = guesses.keys()
-		gs.sort()
+			rest.append(v)
+	var gs: Variant = _packs_differ(rest, pack)
+	if gs != null:
 		var txt := " vs ".join(gs.map(func(g): return "%dS" % g)) if not gs.is_empty() else "resting voltages do not fit one cell count"
 		out.append(issue("pack_differs", "error", "logs with different packs (%s)" % txt, "pick logs flown with packs of one cell count"))
+	elif pack == "":
+		# pack type not known: one cell count fits in the widest band, but maybe not for every pack type
+		for pk in [["LiPo", "lipo"], ["Li-ion", "liion"]]:
+			var g: Variant = _packs_differ(rest, pk[1])
+			if g != null:
+				out.append(issue("pack_ambiguous", "warning", "the resting voltages fit one cell count only for some pack types (as %s: %s): check the pack type and that all logs were flown with one pack" % [
+					pk[0], " vs ".join(g.map(func(x): return "%dS" % x)) if not g.is_empty() else "no common cell count"],
+					"set the pack type; pick logs flown with packs of one cell count"))
+				break
 	var fws := {}
 	for L: Flight in sessions:
 		fws[parse_firmware(L.headers)[3]] = true

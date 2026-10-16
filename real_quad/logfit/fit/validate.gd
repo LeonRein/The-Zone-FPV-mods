@@ -25,12 +25,14 @@ static func hover(p: Dictionary, P: Array, h: Dictionary) -> Dictionary:
 	return {"u_sim": (((u[0] + u[1]) + u[2]) + u[3]) / 4.0, "u_log": h.u, "hz_sim": w / TAU, "hz_log": h.hz, "V": V}
 
 
-## [[j0, sign, plateau], ...] of a session, the largest first.
+## [[j0, sign, plateau], ...] of a session, the largest first. A step needs 0.7 s of usable flight on both
+## sides and its replay window (j0 +- 0.6 s) inside the log: one in the first 0.75 s is skipped.
 static func roll_events(L: Flight, use: PackedByteArray, max_events: int = 6, min_plateau: float = 300.0) -> Array:
 	var fs := L.fs
 	var sp: PackedFloat64Array = L.setpoint[0]
 	var n15 := int(0.15 * fs)
 	var n3 := int(0.3 * fs)
+	var n6 := int(0.6 * fs)
 	var n7 := int(0.7 * fs)
 	var bad := PackedInt32Array()
 	bad.resize(L.n + 1)
@@ -40,14 +42,12 @@ static func roll_events(L: Flight, use: PackedByteArray, max_events: int = 6, mi
 	var ev: Array = []
 	var i := n15
 	while i < L.n - n3 - 1:
-		if absf(sp[i]) > min_plateau:
+		if i >= n7 and absf(sp[i]) > min_plateau:
 			var mn := INF
 			for k in range(i - n15, i):
 				mn = minf(mn, absf(sp[k]))
-			# Python slice semantics of use[i - 0.7 s : i + 0.7 s]
+			# use[i - 0.7 s : i + 0.7 s] (Python slice semantics at the end)
 			var a := i - n7
-			if a < 0:
-				a = maxi(a + L.n, 0)
 			var b := mini(i + n7, L.n)
 			var all_use := a >= b or bad[b] - bad[a] == 0
 			if mn < 100.0 and all_use:
@@ -60,6 +60,9 @@ static func roll_events(L: Flight, use: PackedByteArray, max_events: int = 6, mi
 					if sgn * sp[k] > 0.1 * plateau:
 						j0 = k
 						break
+				if j0 - n6 < 0 or j0 + n6 > L.n:
+					i += 1
+					continue
 				ev.append([j0, sgn, plateau])
 				i += int(0.8 * fs)
 				continue

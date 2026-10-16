@@ -21,7 +21,7 @@ const BBL := preload("../bbl_decoder.gd")
 const Num := preload("num.gd")
 const CHIRP_BOX := 6
 
-var name := ""                       # "<file stem>#<n>", n from 1
+var name := ""                       # "<file stem>#<n>", n from 1 ("<stem>-<sha8>#<n>" for same-named files: Build.unique_names)
 var path := ""
 var file := ""
 var stem := ""

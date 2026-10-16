@@ -22,8 +22,11 @@ const SUBSET_BLOCK := 5000
 const VBAT_SCALE := "vbat_scale"
 
 
-static func prep(L: Flight, use: PackedByteArray, delay_s: float = DELAY_S) -> Dictionary:
+## cancel (optional): polled between the motors and every 10 000 samples of the long loops; when it answers
+## true the answer is {} (the caller stops anyway).
+static func prep(L: Flight, use: PackedByteArray, delay_s: float = DELAY_S, cancel: Callable = Callable()) -> Dictionary:
 	var fs := L.fs
+	var cc := cancel.is_valid()
 	var n := L.n
 	var n_sg := roundi(0.009 * fs) | 1
 	var u0 := L.u()
@@ -33,6 +36,8 @@ static func prep(L: Flight, use: PackedByteArray, delay_s: float = DELAY_S) -> D
 	var u: Array = []
 	var k2 := 2.0 * PI
 	for m in 4:
+		if cc and cancel.call():
+			return {}
 		var hz: PackedFloat64Array = L.motor_hz[m]
 		var wr := PackedFloat64Array()
 		wr.resize(n)
@@ -55,6 +60,8 @@ static func prep(L: Flight, use: PackedByteArray, delay_s: float = DELAY_S) -> D
 	var ok := PackedByteArray()
 	ok.resize(n)
 	for i in n:
+		if cc and i % 10000 == 0 and cancel.call():
+			return {}
 		var good := use[i] != 0
 		if good:
 			for m in 4:
@@ -355,7 +362,9 @@ static func scaled(P: Array, lam: float) -> Array:
 
 
 ## Free-run rotor speeds from the delayed commands; re-synchronised to the log where not ok.
-static func simulate(row: Dictionary, P: Array, V: Dictionary, kv_rad: float, vv: PackedFloat64Array = PackedFloat64Array(), substeps: int = 4) -> Array:
+## cancel (optional): polled every 10 000 samples; when it answers true the rest stays 0 (the caller stops).
+static func simulate(row: Dictionary, P: Array, V: Dictionary, kv_rad: float, vv: PackedFloat64Array = PackedFloat64Array(), substeps: int = 4,
+		cancel: Callable = Callable()) -> Array:
 	var t: PackedFloat64Array = row.t
 	var n := t.size()
 	if vv.is_empty():
@@ -398,35 +407,39 @@ static func simulate(row: Dictionary, P: Array, V: Dictionary, kv_rad: float, vv
 	var x1 := w1[0]
 	var x2 := w2[0]
 	var x3 := w3[0]
-	for i in n:
-		if ok[i] == 0:
-			x0 = w0[i]
-			x1 = w1[i]
-			x2 = w2[i]
-			x3 = w3[i]
-		var h := minf(dts[i], 0.005) / substeps
-		var v := vv[i]
-		var e0 := u0[i] * v
-		var e1 := u1[i] * v
-		var e2 := u2[i] * v
-		var e3 := u3[i] * v
-		for _k in substeps:
-			x0 = x0 + h * (a0 * (e0 - x0 / kv_rad) - b0 * x0 * x0 - c0)
-			x1 = x1 + h * (a1 * (e1 - x1 / kv_rad) - b1 * x1 * x1 - c1)
-			x2 = x2 + h * (a2 * (e2 - x2 / kv_rad) - b2 * x2 * x2 - c2)
-			x3 = x3 + h * (a3 * (e3 - x3 / kv_rad) - b3 * x3 * x3 - c3)
-			if x0 < 0.0:
-				x0 = 0.0
-			if x1 < 0.0:
-				x1 = 0.0
-			if x2 < 0.0:
-				x2 = 0.0
-			if x3 < 0.0:
-				x3 = 0.0
-		s0[i] = x0
-		s1[i] = x1
-		s2[i] = x2
-		s3[i] = x3
+	var cc := cancel.is_valid()
+	for i0 in range(0, n, 10000):
+		if cc and cancel.call():
+			break
+		for i in range(i0, mini(i0 + 10000, n)):
+			if ok[i] == 0:
+				x0 = w0[i]
+				x1 = w1[i]
+				x2 = w2[i]
+				x3 = w3[i]
+			var h := minf(dts[i], 0.005) / substeps
+			var v := vv[i]
+			var e0 := u0[i] * v
+			var e1 := u1[i] * v
+			var e2 := u2[i] * v
+			var e3 := u3[i] * v
+			for _k in substeps:
+				x0 = x0 + h * (a0 * (e0 - x0 / kv_rad) - b0 * x0 * x0 - c0)
+				x1 = x1 + h * (a1 * (e1 - x1 / kv_rad) - b1 * x1 * x1 - c1)
+				x2 = x2 + h * (a2 * (e2 - x2 / kv_rad) - b2 * x2 * x2 - c2)
+				x3 = x3 + h * (a3 * (e3 - x3 / kv_rad) - b3 * x3 * x3 - c3)
+				if x0 < 0.0:
+					x0 = 0.0
+				if x1 < 0.0:
+					x1 = 0.0
+				if x2 < 0.0:
+					x2 = 0.0
+				if x3 < 0.0:
+					x3 = 0.0
+			s0[i] = x0
+			s1[i] = x1
+			s2[i] = x2
+			s3[i] = x3
 	return [s0, s1, s2, s3]
 
 

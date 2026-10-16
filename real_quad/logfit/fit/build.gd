@@ -93,11 +93,12 @@ static func canonical_order(paths: PackedStringArray) -> PackedStringArray:
 # ------------------------------------------------------------- decoding --
 
 ## Decodes the files (one worker thread per file, up to cores - 1 at a time), in canonical order:
-## [{name, size, sha256, path, sessions: [Flight], error}].
+## [{name, size, sha256, path, sessions: [Flight], error ("" | csv | unreadable | not_blackbox), why}].
+## Session ids are made unique (unique_names()).
 func load_files(paths: PackedStringArray, from_frac: float = 0.0, to_frac: float = 0.25) -> Array:
 	var out: Array = []
 	for p in paths:
-		out.append({"path": p, "name": p.get_file(), "size": 0, "sha256": "", "sessions": [], "error": ""})
+		out.append({"path": p, "name": p.get_file(), "size": 0, "sha256": "", "sessions": [], "error": "", "why": ""})
 	var nthreads := maxi(1, mini(OS.get_processor_count() - 1, 8))
 	var next := 0
 	var running: Array = []
@@ -112,12 +113,81 @@ func load_files(paths: PackedStringArray, from_frac: float = 0.0, to_frac: float
 		th0.wait_to_finish()
 		done += 1
 		_say("Reading the logs", from_frac + (to_frac - from_frac) * done / maxi(paths.size(), 1))
+	unique_names(out)
 	return out
+
+
+## Session ids "<stem>#<n>" collide for files of the same name (stem) from different folders: the sessions
+## of every such file are named "<stem>-<first 8 hex of the file's SHA-256>#<n>" instead (identical files
+## twice: "-1", "-2" in canonical order, i.e. by full path). files: load_files()'s entries in canonical
+## order. Deterministic and independent of the input order; ids without a clash stay "<stem>#<n>".
+static func unique_names(files: Array) -> void:
+	var stems := {}
+	for e in files:
+		if e.sessions.is_empty():
+			continue
+		var st: String = str(e.path).get_file().get_basename()
+		if not stems.has(st):
+			stems[st] = []
+		stems[st].append(e)
+	for st in stems:
+		var group: Array = stems[st]
+		if group.size() < 2:
+			continue
+		var tags: Array = group.map(func(e): return "%s-%s" % [st, str(e.sha256).substr(0, 8)])
+		var seen := {}
+		for k in group.size():
+			var tag: String = tags[k]
+			if tags.count(tag) > 1:
+				seen[tag] = int(seen.get(tag, 0)) + 1
+				tag = "%s-%d" % [tag, seen[tag]]
+			for L: Flight in group[k].sessions:
+				L.name = "%s#%d" % [tag, L.session]
+
+
+## The error of a file that cannot be opened (contract 2.1, 5.7): its own text, not "not a blackbox log".
+## why: "permission denied", "file not found" or "read error"; a denied read on macOS is its privacy prompt.
+static func unreadable_issue(name: String, why: String, macos: Variant = null) -> Dictionary:
+	var mac: bool = OS.get_name() == "macOS" if macos == null else bool(macos)
+	if mac and why == "permission denied":
+		return Checks.issue("unreadable", "error", "%s: macOS did not allow reading this folder: allow it or copy the logs elsewhere" % name,
+			"System Settings → Privacy & Security → Files and Folders: allow the game, or copy the logs to another folder")
+	return Checks.issue("unreadable", "error", "%s: the file cannot be read (%s)" % [name, why],
+		"allow reading the file (its permissions) or copy the logs to another folder")
+
+
+## The refusal of the files that could not be read or are no blackbox logs ([] if all are fine).
+static func file_errors(files: Array) -> Array:
+	var errs: Array = []
+	for e in files:
+		if e.error == "unreadable":
+			errs.append(unreadable_issue(e.name, e.why))
+		elif e.error == "csv":
+			errs.append(Checks.issue("csv_input", "error", "%s: Blackbox Explorer CSV exports are not accepted" % e.name,
+				"pick the original .bbl/.bfl/.txt file from the flight controller's flash or SD card"))
+		elif e.error == "not_blackbox":
+			errs.append(Checks.issue("not_blackbox", "error", "%s: not a Betaflight blackbox log (no log header found)" % e.name,
+				"pick the .bbl/.bfl/.txt file from the flight controller's flash or SD card"))
+	return errs
 
 
 func _load_one(e: Dictionary) -> void:
 	var p: String = e.path
-	e.size = _file_size(p)
+	# readable at all (permissions, macOS privacy): before anything else
+	var fa := FileAccess.open(p, FileAccess.READ)
+	if fa == null:
+		var oe := FileAccess.get_open_error()
+		e.error = "unreadable"
+		# (Godot reports a denied open of an existing file as ERR_FILE_CANT_OPEN on Linux)
+		if oe == ERR_FILE_NOT_FOUND or not FileAccess.file_exists(p):
+			e.why = "file not found"
+		elif oe == ERR_FILE_NO_PERMISSION or oe == ERR_FILE_CANT_OPEN:
+			e.why = "permission denied"
+		else:
+			e.why = "read error"
+		return
+	e.size = fa.get_length()
+	fa.close()
 	if p.to_lower().ends_with(".csv"):
 		e.error = "csv"
 		return
@@ -145,15 +215,6 @@ func _load_one(e: Dictionary) -> void:
 		L.info.hash = ("%s#%d" % [e.sha256, L.session]).sha256_text()
 		ss[k] = null
 		e.sessions.append(L)
-
-
-static func _file_size(p: String) -> int:
-	var f := FileAccess.open(p, FileAccess.READ)
-	if f == null:
-		return 0
-	var n := f.get_length()
-	f.close()
-	return n
 
 
 # ------------------------------------------------------------- the run --
@@ -195,14 +256,9 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 	var all_s: Array = []
 	for e in files_in:
 		files.append({"name": e.name, "size": e.size, "sha256": e.sha256})
-		if e.error == "csv":
-			errs.append(Checks.issue("csv_input", "error", "%s: Blackbox Explorer CSV exports are not accepted" % e.name,
-				"pick the original .bbl/.bfl/.txt file from the flight controller's flash or SD card"))
-		elif e.error == "not_blackbox":
-			errs.append(Checks.issue("not_blackbox", "error", "%s: not a Betaflight blackbox log (no log header found)" % e.name,
-				"pick the .bbl/.bfl/.txt file from the flight controller's flash or SD card"))
-		else:
+		if e.error == "":
 			all_s.append_array(e.sessions)
+	errs = file_errors(files_in)
 	if not errs.is_empty():
 		return _refuse(errs)
 	_say("Checking the logs", 0.26)
@@ -334,7 +390,9 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 	for L: Flight in used:
 		if cancel_flag:
 			return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
-		var r := Checks.sanity(L, rough_thr[L.name], ncell, pack, erpm_limit)
+		var r := Checks.sanity(L, rough_thr[L.name], ncell, pack, erpm_limit, _cancelled)
+		if cancel_flag:
+			return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
 		san[L.name] = r.metrics
 		warns.append_array(r.issues)
 		if r.drop_acc:
@@ -413,7 +471,7 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 	_say("Motor and ESC model", 0.37)
 	var rows: Array = []
 	for k in LL.size():
-		rows.append(Motor.prep(LL[k], uses[k]))
+		rows.append(Motor.prep(LL[k], uses[k], Motor.DELAY_S, _cancelled))
 		if cancel_flag:
 			return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
 	var motor_s := 0.0
@@ -438,7 +496,9 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 	for r in rows:
 		if cancel_flag:
 			return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
-		sims.append(Motor.simulate(r, P, V, kv_rad))
+		sims.append(Motor.simulate(r, P, V, kv_rad, PackedFloat64Array(), 4, _cancelled))
+	if cancel_flag:
+		return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
 	var frh := {}
 	for k in LL.size():
 		var e: PackedFloat64Array = Motor.free_run_error_hz(rows[k], sims[k])[0]
@@ -481,37 +541,41 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 		chirp_s += float(m.count(1)) / LL[k].fs
 	var use_chirp := chirp_s >= MIN_CHIRP_S
 	var band: Array = Rotation.BAND
-	var rr: Array = []
 	var bcol := PackedFloat64Array()
 	for m in 4:
 		bcol.append(P[m][1])
-	for k in LL.size():
-		var u: PackedByteArray = uses[k]
-		var cm: PackedByteArray = chirp_masks[k]
-		var sel := Num.mask_and(u, cm) if use_chirp else Num.mask_and(u, Num.mask_not(cm))
-		rr.append_array(Rotation.rows_for(LL[k], sims[k], bcol, sel, band[0], band[1]))
-		if cancel_flag:
-			return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
-	var fit := Rotation.iv_fit(rr)
-	var miss_ax: Array = Rotation.AX.filter(func(ax): return not fit.has(ax))
+	var fa := Rotation.fit_all(LL, sims, bcol, uses, chirp_masks, segs, use_chirp, band, _cancelled)
+	if fa.is_empty() or cancel_flag:
+		return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
+	var fit: Dictionary = fa[0]
+	var yaw_src: String = fa[3]
+	var miss_ax: Array = Rotation.AX.slice(0, 2).filter(func(ax): return not fit.has(ax))
 	if not miss_ax.is_empty():
 		return _refuse([Checks.issue("min_rotation", "error", "rotation fit failed: fewer than 100 usable samples in windows of 3 s or more on " + ", ".join(miss_ax),
 			"add logs with more flying (chirp sweeps recommended)")], rows_tbl)
+	if not fit.has("yaw"):          # no yaw excitation at all (or no data): J_rotor and the direction from the defaults
+		fit.yaw = Rotation.no_fit()
 	var dflt := Craft.defaults(c, kT)
-	var tp := Rotation.to_params(fit, kT, geo.arm, Craft.REFERENCE.Izz_over_Ixy, use_chirp, dflt.J_rotor)
+	var rev_hdr := src.hint("yaw_motors_reversed", -1)      # (not in today's headers: then fc_config's default, props out)
+	var rev_default: bool = bool(rev_hdr) if rev_hdr == 0 or rev_hdr == 1 else bool(cfg.yaw_motors_reversed)
+	var tp := Rotation.to_params(fit, kT, geo.arm, Craft.REFERENCE.Izz_over_Ixy, use_chirp, dflt.J_rotor, rev_default,
+		1 if use_chirp and yaw_src == "chirp" else 0)
 	var rp: Dictionary = tp[0]
 	var yaw_rev: bool = tp[1]
 	var yaw_ok: bool = tp[2]
 	if not yaw_ok:
-		rep.default("J_rotor (yaw)", "%s kg·m²" % Report.fmt_g(dflt.J_rotor, 3), "yaw fit too uncertain (R² < 0.5): reference × (D/5.1\")⁴ × blades/3")
+		rep.default("J_rotor (yaw)", "%s kg·m²" % Report.fmt_g(dflt.J_rotor, 3), "yaw fit too uncertain (R² < 0.5 or rel. std. error > 25 %): reference × (D/5.1\")⁴ × blades/3")
+		rep.default("yaw_motors_reversed", "ON" if yaw_rev else "OFF", "the yaw fit cannot tell the motor direction: " +
+			("from the log header" if rev_hdr == 0 or rev_hdr == 1 else "assumed props out; check it in Betaflight's Motors tab"))
+	if use_chirp and yaw_src == "freestyle":
+		rep.default("Yaw fit data", "freestyle", "no yaw chirp sweep: yaw from the flying outside the sweeps, yaw rate damping 0")
 	var s0 := 1.0 if yaw_rev else -1.0
 	var kQ: float = rp.J_rotor * ((((bcol[0] + bcol[1]) + bcol[2]) + bcol[3]) / 4.0)
 	cfg.yaw_motors_reversed = yaw_rev
 	rep.rotation(fit, rp, kQ, yaw_rev, use_chirp, chirp_s, band)
 	rep.default("Izz", "%s kg·m²" % Report.fmt_g(rp.Izz, 3), "1.7 × mean roll/pitch inertia (only J_rotor/Izz is measured)")
-	steps["05_rotation"] = {"chirp_s": chirp_s, "use_chirp": use_chirp, "band": band, "n_rows": rr.size(), "fit": fit, "params": rp,
-		"yaw_reversed": yaw_rev, "yaw_ok": yaw_ok, "kQ": kQ}
-	rr = []
+	steps["05_rotation"] = {"chirp_s": chirp_s, "use_chirp": use_chirp, "band": band, "n_rows": fa[1], "n_rows_yaw": fa[2], "yaw_source": yaw_src,
+		"fit": fit, "params": rp, "yaw_reversed": yaw_rev, "yaw_ok": yaw_ok, "yaw_reversed_default": rev_default, "kQ": kQ}
 
 	# 6 bias
 	_say("Trim", 0.7)
@@ -564,6 +628,8 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 	_say("Drag", 0.75)
 	var shape: Array = dflt.cd_area
 	var dfit := Drag.fit(LL, uses, mass, shape, h.sum_w, h.sum_w2, _cancelled)
+	if cancel_flag:
+		return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
 	var rd_default: float = dflt.rotor_drag_per_s * mass / h.sum_w
 	var top_given: Variant = c.get("top_speed_kmh") if Craft._truthy(c.get("top_speed_kmh")) else null
 	var good: bool = dfit.get("ok", false) and dfit.r2 >= 0.5 and dfit.rel_sd != null
@@ -737,7 +803,12 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 	var md := rep.render()
 	steps["12_final"] = {"plant": p, "fc": cfg, "craft": pkg_craft, "logfit": lf}
 	if out_dir != "":
-		var werr := _write_package(out_dir, {"craft.json": pkg_craft, "fc.json": cfg, "plant.json": p, "logfit.json": lf}, md)
+		# the last chance to cancel: from here on the package is written and the answer is ok
+		if cancel_flag:
+			return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
+		var werr := _write_package(out_dir, {"craft.json": pkg_craft, "fc.json": cfg, "plant.json": p, "logfit.json": lf}, md, _cancelled)
+		if werr == "cancelled":
+			return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
 		if werr != "":
 			return _refuse([Checks.issue("write_failed", "error", werr, "check that the folder can be written")], rows_tbl)
 	_say("Done", 1.0)
@@ -757,7 +828,7 @@ static func _param_sources(rd_ok: bool, body_src: String, yaw_ok: bool, chirp: b
 	var bm := "M" if bat.source != "default" else "C"
 	return {"mass": "U", "kv_rad": "U" if form.get("kv") == "U" else "M", "motor_a": "M", "motor_b": "M", "motor_c": "M",
 		"motor_delay_s": "K", "kT": "M", "arm": "C" if geo.arm_assumed else "U", "Ixx": "D", "Iyy": "D", "Izz": "C",
-		"J_rotor": "M" if yaw_ok else "C", "kQ": "D", "yaw_spin": "M", "rate_damping": "M" if chirp else "C",
+		"J_rotor": "M" if yaw_ok else "C", "kQ": "D", "yaw_spin": "M" if yaw_ok else "C", "rate_damping": "M" if chirp else "C",
 		"pitch_m_per_rad": "C" if geo.pitch_assumed else "U", "prop_radius": "U" if form.get("prop.diameter_in") == "U" else "C",
 		"cd_area": {"acc": "M", "top_speed": "D", "default": "C"}[body_src], "rotor_drag": "M" if rd_ok else "C",
 		"linear_drag_ref_sum_w": "M", "torque_bias_per_thrust": "M" if b != null else "C",
@@ -798,29 +869,55 @@ static func _structural_peak(logs: Array, uses: Array) -> Variant:
 	return null
 
 
-## Writes the package into a temporary folder next to out_dir, then moves it in place ("" = ok).
-static func _write_package(out_dir: String, jsons: Dictionary, md: String) -> String:
+## Writes the package into a temporary folder next to out_dir, then swaps it in: an old package is renamed
+## to <id>.bak beside the temporary folder first, put back if the swap fails, and deleted after it. Every
+## write is checked. "" = ok, "cancelled" (cancel() before the swap: nothing changed), else the error.
+static func _write_package(out_dir: String, jsons: Dictionary, md: String, cancel: Callable = Callable()) -> String:
 	var parent := out_dir.get_base_dir()
 	var tmp_root := parent.get_base_dir().path_join("logfit_tmp")
 	var tmp := tmp_root.path_join(out_dir.get_file())
+	var bak := tmp_root.path_join(out_dir.get_file() + ".bak")
 	_remove_dir(tmp)
 	if DirAccess.make_dir_recursive_absolute(tmp) != OK:
 		return "cannot create %s" % tmp
+	var texts := {}
 	for name in jsons:
-		var f := FileAccess.open(tmp.path_join(name), FileAccess.WRITE)
-		if f == null:
-			return "cannot write %s" % tmp.path_join(name)
-		f.store_string(JSON.stringify(jsons[name], " ", false, true) + "\n")
-		f.close()
-	var fm := FileAccess.open(tmp.path_join("report.md"), FileAccess.WRITE)
-	if fm == null:
-		return "cannot write report.md"
-	fm.store_string(md)
-	fm.close()
+		texts[name] = JSON.stringify(jsons[name], " ", false, true) + "\n"
+	texts["report.md"] = md
+	for name in texts:
+		var err := _write_text(tmp.path_join(name), texts[name])
+		if err != "":
+			_remove_dir(tmp)
+			return err
+	if cancel.is_valid() and cancel.call():
+		_remove_dir(tmp)
+		return "cancelled"
 	DirAccess.make_dir_recursive_absolute(parent)
-	_remove_dir(out_dir)
+	_remove_dir(bak)
+	var had_old := DirAccess.dir_exists_absolute(out_dir)
+	if had_old and DirAccess.rename_absolute(out_dir, bak) != OK:
+		_remove_dir(tmp)
+		return "cannot move the old package %s aside" % out_dir
 	if DirAccess.rename_absolute(tmp, out_dir) != OK:
+		if had_old:
+			DirAccess.rename_absolute(bak, out_dir)
+		_remove_dir(tmp)
 		return "cannot move %s to %s" % [tmp, out_dir]
+	_remove_dir(bak)
+	return ""
+
+
+## Writes text to path, checking the open, the write and the flush ("" = ok).
+static func _write_text(path: String, text: String) -> String:
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		return "cannot write %s (%s)" % [path, error_string(FileAccess.get_open_error())]
+	var ok := f.store_string(text)
+	f.flush()
+	var err := f.get_error()
+	f.close()
+	if not ok or err != OK:
+		return "cannot write %s (%s)" % [path, error_string(err if err != OK else ERR_FILE_CANT_WRITE)]
 	return ""
 
 
