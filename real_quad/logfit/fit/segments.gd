@@ -5,7 +5,9 @@ extends RefCounted
 ##   crash    motor stall (one rotor < 10 % of the median of the other three for > 50 ms with throttle
 ##            > 0.5 x hover), lateral specific force > 3 g or |a| spike > 4 g at low throttle, a
 ##            gyroUnfilt jump > 500 deg/s between two samples, an eRPM glitch; +-0.3 s margins
-##   gaps     time step > 3x the median step (+-0.1 s); the last 0.3 s
+##   gaps     time step > 3x the median step. Gaps less than 2 s apart form one block (a corrupted stretch
+##            of the log); the block is dropped as a whole, from its first gap to its last plus 1 s on both
+##            sides; the last 0.3 s
 ## Windows shorter than 1 s are dropped; chirp windows must be >= 95 % usable.
 
 const Num := preload("num.gd")
@@ -13,6 +15,8 @@ const Flight := preload("flight.gd")
 
 const MARGIN := 0.3
 const MIN_WINDOW := 1.0
+const GAP_MERGE_S := 2.0             # gaps closer than this belong to one corrupted block
+const GAP_MARGIN_S := 1.0            # dropped before the first and after the last gap of a block
 const STALL_FRAC := 0.10
 const STALL_S := 0.05
 
@@ -155,6 +159,35 @@ static func _dilate(t: PackedFloat64Array, mask: PackedByteArray, before: float,
 	return out
 
 
+## [blocks, n_gaps]: the stretches [t0, t1] to drop around gaps (time step > 3x the median step). Gaps
+## closer than GAP_MERGE_S (end of one to start of the next) make one block, which runs from the start of
+## its first gap to the end of its last, plus GAP_MARGIN_S on both sides.
+static func gap_blocks(t: PackedFloat64Array) -> Array:
+	var n := t.size()
+	var blocks: Array = []
+	var ngaps := 0
+	if n < 2:
+		return [blocks, 0]
+	var dt := PackedFloat64Array()
+	dt.resize(n - 1)
+	for i in n - 1:
+		dt[i] = t[i + 1] - t[i]
+	var lim := 3.0 * Num.median(dt)
+	for i in n - 1:
+		if dt[i] > lim:
+			ngaps += 1
+			var a := t[i]
+			var b := t[i + 1]
+			if not blocks.is_empty() and a - blocks[-1][1] < GAP_MERGE_S:
+				blocks[-1][1] = b
+			else:
+				blocks.append([a, b])
+	for blk in blocks:
+		blk[0] -= GAP_MARGIN_S
+		blk[1] += GAP_MARGIN_S
+	return [blocks, ngaps]
+
+
 static func _nruns(mask: PackedByteArray) -> int:
 	return Num.runs(mask).size() / 2
 
@@ -165,19 +198,17 @@ static func auto_segments(L: Flight, hover_thr: float, erpm_limit_hz: float) -> 
 	var n := L.n
 	var fs := L.fs
 	var info := {}
-	var dt := PackedFloat64Array()
-	dt.resize(n - 1)
-	for i in n - 1:
-		dt[i] = t[i + 1] - t[i]
-	var med := Num.median(dt)
+	var gb := gap_blocks(t)
 	var gap := Num.zeros_mask(n)
-	var ngap := 0
-	for i in n - 1:
-		if dt[i] > 3.0 * med:
-			ngap += 1
-			for j in range(Num.lower(t, t[i] - 0.1), Num.upper(t, t[i + 1] + 0.1)):
-				gap[j] = 1
-	info.gaps = ngap
+	for blk in gb[0]:
+		for j in range(Num.lower(t, blk[0]), Num.upper(t, blk[1])):
+			gap[j] = 1
+	info.gaps = gb[1]
+	info.gap_blocks = gb[0].size()
+	var gap_s := 0.0
+	for blk in gb[0]:
+		gap_s += blk[1] - blk[0]
+	info.gap_s = Num.pyround(gap_s, 1)
 	var k := maxi(3, int(0.05 * fs))
 	var gmax := Num.uniform_filter1d(max_abs_rows(L.gyro), k)
 	var w2 := _sum_w2(L) if L.has_hz() else PackedFloat64Array()
