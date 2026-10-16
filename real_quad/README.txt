@@ -36,9 +36,11 @@ WHAT CHANGES
       rates="model" takes those of the real quad
     - Betaflight 2026.6's rate loop, with the settings read from the real
       quad's own blackbox header: rates, RC smoothing, feedforward, PID
-      with I-term relax and anti-gravity, D filters and RPM filter, TPA,
-      dynamic idle, airmode and the mixer. It runs at the firmware's own
-      rate (4000 times a second for freestyle5), several times each tick
+      with I-term relax and anti-gravity, the gyro and D filters (RPM
+      filter, dynamic and static notches, lowpasses; the gyro's own at the
+      gyro rate), TPA, dynamic idle, airmode and the mixer. It runs at the
+      firmware's own rate (4000 times a second for freestyle5), several
+      times each tick
     - four motors follow the loop's outputs through the ESC and motor
       response worked out from the logs (speed against throttle, voltage
       and prop load, the delay of the signal and the motor). Each prop
@@ -69,8 +71,8 @@ WHAT CHANGES
       dirty_air's descent curve replaces the props' own inflow, so nothing
       counts twice). dirty_air's wash and wake stay its own (1); each
       model sets the gusts of the old wake (plant.json dirty_air_gust;
-      freestyle5 6.79, freestyle35 4.01) and a light turbulence in calm
-      air (turb_base_ms; 0.249 and 0.193 m/s), calibrated so that the gyro
+      freestyle5 5.54, freestyle35 4.92) and a light turbulence in calm
+      air (turb_base_ms; 0.232 and 0.199 m/s), calibrated so that the gyro
       shakes as much as the real quad's did in its logs: a drop and catch
       as its worst moments, a hover as its calm ones. Dropping straight down and
       punching out is the worst case. Without dirty_air the quad flies in
@@ -92,7 +94,8 @@ WHAT CHANGES
       logs: about 25%; freestyle35 32%, its logs about 30%)
 
   The CPU: about a quarter of a millisecond a physics tick for the loop at
-  4000 Hz (roughly an eighth of a core), about 0.4 ms at 8000 Hz.
+  4000 Hz with the dynamic notch (roughly a ninth of a core), about 0.3 ms
+  at 8000 Hz.
 
 
 MODELS
