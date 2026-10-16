@@ -8,8 +8,6 @@ extends RefCounted
 ##   mm.start({id, form, add: [paths], keep: [names] | null, new: bool}) -> "" or why not
 ##   mm.recalibrate(id) -> "" or why not  # only the prop wash calibration (a job as a build; details(id).propwash
 ##                                         # {recalibrate, why, text} says when it is due: another dirty_air installed)
-##   mm.autotune(id) -> "" or why not     # the tuned twin of a grade A/B model (simulator only): a new model
-##                                         # <id>_tuned of yours (the same plant, the tuned fc.json), replaced when tuned again
 ##   mm.poll()                       # main thread, each frame while busy(): collects a finished job (rescans the models)
 ##   mm.status()                     # "Building <name>: <step> 45 %" while a job runs, else "" (mod_settings' line)
 ##   mm.duplicate(id) / mm.delete(id) / mm.apply_meta(id, name, drone)
@@ -48,7 +46,6 @@ class Job:
 	var new_model := false
 	var dir := ""                     # where the model's package is (for a rebuild)
 	var recal := false                # only the prop wash calibration
-	var tune := false                 # the autotune (a tuned twin)
 	var step := "Starting"
 	var frac := 0.0
 	var t0 := 0
@@ -294,6 +291,8 @@ func details(id: String) -> Dictionary:
 	var lf := read_json(dir.path_join("logfit.json"))
 	var craft := read_json(dir.path_join("craft.json"))
 	r["report_md"] = FileAccess.get_file_as_string(dir.path_join("report.md"))
+	if FileAccess.file_exists(dir.path_join("tune.md")):
+		r.report_md = FileAccess.get_file_as_string(dir.path_join("tune.md")) + "\n---\n\n" + r.report_md
 	r["grade_meaning"] = str(lf.get("grade_meaning", ""))
 	r["created"] = str(lf.get("created", inputs.get("built", "")))
 	r["inputs_known"] = inputs.has("logs") and inputs.has("form")
@@ -398,30 +397,20 @@ func current() -> Dictionary:
 		return {}
 	var s := _job.snapshot()
 	return {"id": _job.id, "name": _job.name, "step": s.step, "frac": s.frac, "elapsed_s": (Time.get_ticks_msec() - _job.t0) / 1000,
-		"new": _job.new_model, "cancelling": _job.cancelled, "recal": _job.recal, "tune": _job.tune}
+		"new": _job.new_model, "cancelling": _job.cancelled, "recal": _job.recal}
 
 
 ## mod_settings' line: "Building <name>: <step> 45 %", else how the last job went for a while, else ""
 func status() -> String:
 	if _job != null:
 		var c := current()
-		return "%s %s: %s %d %%%s" % ["Recalibrating" if c.recal else "Tuning" if c.tune else "Building", c.name, c.step, int(round(float(c.frac) * 100.0)), " (cancelling)" if c.cancelling else ""]
+		return "%s %s: %s %d %%%s" % ["Recalibrating" if c.recal else "Building", c.name, c.step, int(round(float(c.frac) * 100.0)), " (cancelling)" if c.cancelling else ""]
 	if not last.is_empty() and Time.get_ticks_msec() < notice_until_ms:
 		return notice_text(last)
 	return ""
 
 
 static func notice_text(rec: Dictionary) -> String:
-	if bool(rec.get("tune", false)):
-		if bool(rec.get("cancelled", false)):
-			return "Tuning %s was cancelled." % rec.name
-		if bool(rec.get("ok", false)):
-			return "%s: %s." % [rec.name, rec.get("text", "tuned twin made")]
-		var w := ""
-		for e in rec.get("errors", []):
-			w = str(e.get("text", e)) if e is Dictionary else str(e)
-			break
-		return "Tuning %s failed%s" % [rec.name, ": " + w if w != "" else "."]
 	if bool(rec.get("recal", false)):
 		if bool(rec.get("cancelled", false)):
 			return "Recalibrating the prop wash of %s was cancelled." % rec.name
@@ -535,84 +524,6 @@ func recalibrate(id: String) -> String:
 		job.done = true
 		job.mutex.unlock(), Thread.PRIORITY_LOW)
 	return ""
-
-
-## Starts the autotune of a grade A/B model (logfit.autotune()); when it worked, the tuned twin <id>_tuned is
-## written as a model of yours (an older twin of the same id is replaced). "" = started, else why not.
-func autotune(id: String) -> String:
-	if _job != null:
-		var c := current()
-		return "%s is being built (%s, %d %%): wait for it to finish, or cancel it first." % [c.name, c.step, int(round(float(c.frac) * 100.0))]
-	if not available():
-		return "The model builder is not installed completely: real_quad/logfit/logfit.gd is missing. Update the mod."
-	var dir := model_dir(id)
-	if origin(id) == "":
-		return "Unknown model."
-	if not _grade_of(dir) in ["A", "B"]:
-		return "Only models of grade A or B can be tuned: their plant is identified well enough."
-	var lf = _script().new()
-	if not lf.has_method("autotune"):
-		return "The model builder is too old to tune: update the mod."
-	var craft := read_json(dir.path_join("craft.json"))
-	_job = Job.new()
-	_job.id = id
-	_job.name = str(craft.get("name", id))
-	_job.tune = true
-	_job.dir = dir
-	_job.t0 = Time.get_ticks_msec()
-	_job.logfit = lf
-	last = {}
-	var job := _job
-	var twin := slug(id).substr(0, 30) + "_tuned"
-	job.thread = Thread.new()
-	job.thread.start(func():
-		var r: Dictionary = job.logfit.autotune(dir, func(s: String, f: float): job.progress(s, f))
-		if job.cancelled:
-			r["cancelled"] = true
-		elif bool(r.get("ok", false)):
-			r.merge(_write_twin(dir, twin, craft, r), true)
-		job.mutex.lock()
-		job.result = r
-		job.done = true
-		job.mutex.unlock(), Thread.PRIORITY_LOW)
-	return ""
-
-
-## Writes the tuned twin (worker thread): the model's craft.json (new id and name), plant.json and logfit.json,
-## the tuned fc.json, report.md (the tune's, then the model's), autotune.json. {ok, twin_id, text} or {ok false, errors}
-func _write_twin(src: String, twin: String, craft: Dictionary, r: Dictionary) -> Dictionary:
-	var stage := work.path_join("stage").path_join(twin)
-	remove_dir(stage)
-	DirAccess.make_dir_recursive_absolute(stage)
-	var c := craft.duplicate(true)
-	c["id"] = twin
-	c["name"] = ("%s (tuned)" % str(craft.get("name", twin))).substr(0, 40)
-	c["tuned_from"] = str(craft.get("id", ""))
-	var ok := write_json(stage.path_join("craft.json"), c) and write_json(stage.path_join("fc.json"), r.fc) \
-		and copy_file(src.path_join("plant.json"), stage.path_join("plant.json")) and write_json(stage.path_join("autotune.json"), r.record)
-	if FileAccess.file_exists(src.path_join("logfit.json")):
-		ok = copy_file(src.path_join("logfit.json"), stage.path_join("logfit.json")) and ok
-	var md := str(r.report_md)
-	var i := md.find("\n")         # the grade near the top, as a build's report has it (the plant's)
-	md = md.substr(0, i) + "\n\n## Grade %s: the plant's, identified from the logs\n" % _grade_of(src) + md.substr(i)
-	var f := FileAccess.open(stage.path_join("report.md"), FileAccess.WRITE)
-	if f != null:
-		f.store_string(md + "\n---\n\n" + FileAccess.get_file_as_string(src.path_join("report.md")))
-		f.close()
-	var dst := root.path_join(twin)
-	if not ok or f == null or not _files_parse(stage):
-		remove_dir(stage)
-		return {"ok": false, "errors": [{"text": "Cannot write the tuned twin (disk full?).", "fix": ""}]}
-	remove_dir(dst)
-	DirAccess.make_dir_recursive_absolute(root)
-	if DirAccess.rename_absolute(stage, dst) != OK:
-		remove_dir(stage)
-		return {"ok": false, "errors": [{"text": "Cannot move the tuned twin into %s." % dst, "fix": ""}]}
-	var g: Dictionary = r.record.tuned.groups
-	var f0: Dictionary = r.record.flown.groups
-	var key := "replay" if g.has("replay") else "steps"
-	return {"ok": true, "twin_id": twin, "text": "tuned twin %s made (tracking error %s %.0f %%)" % [c.name,
-		"of your sticks" if key == "replay" else "in stick steps", 100.0 * (float(g[key]) / maxf(float(f0[key]), 1e-6) - 1.0)]}
 
 
 func cancel() -> void:
@@ -765,11 +676,11 @@ func poll() -> bool:
 	var rec := {"id": job.id, "name": job.name, "new": job.new_model, "ok": bool(r.get("ok", false)), "grade": str(r.get("grade", "")),
 		"cancelled": bool(r.get("cancelled", false)) or (job.cancelled and not bool(r.get("ok", false))), "errors": r.get("errors", []),
 		"warnings": r.get("warnings", []), "notes": r.get("notes", []), "elapsed_s": (Time.get_ticks_msec() - job.t0) / 1000.0,
-		"recal": job.recal, "tune": job.tune, "text": str(r.get("text", "")), "twin_id": str(r.get("twin_id", ""))}
+		"recal": job.recal, "text": str(r.get("text", ""))}
 	last = rec
 	notice_until_ms = Time.get_ticks_msec() + 60000
 	if host != null and host.has_method("models_changed"):
-		host.models_changed(str(r.get("twin_id", job.id)))
+		host.models_changed(job.id)
 	finished.emit(rec)
 	return true
 
@@ -779,11 +690,11 @@ func poll() -> bool:
 func _stopped(job: Job) -> Dictionary:
 	var id := job.id
 	var aside := work.path_join("old").path_join(id)
-	if not job.recal and not job.tune and not job.new_model and DirAccess.dir_exists_absolute(aside) and not DirAccess.dir_exists_absolute(job.dir):
+	if not job.recal and not job.new_model and DirAccess.dir_exists_absolute(aside) and not DirAccess.dir_exists_absolute(job.dir):
 		DirAccess.rename_absolute(aside, job.dir)
 	remove_dir(work.path_join("stage").path_join(id))
 	remove_dir(work.path_join("building").path_join(id))
-	var what := "The prop wash calibration" if job.recal else "The autotune" if job.tune else "The build"
+	var what := "The prop wash calibration" if job.recal else "The build"
 	return {"ok": false, "errors": [{"text": "%s stopped unexpectedly (an error in the model builder: see the game's log). The model is as it was." % what, "fix": ""}], "warnings": []}
 
 

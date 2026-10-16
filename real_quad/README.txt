@@ -162,20 +162,22 @@ MODELS... (THE MODEL MANAGER)
   class values, and what to fly). A model calibrated with another version
   of dirty_air than the one installed offers "Recalibrate prop wash",
   which runs only that step.
-  Tuned twin (models of grade A or B): how would my quad probably fly when
-  well tuned? A background job flies the model in the simulator - your
-  own sticks from its logs, stick steps at idle, hover and full throttle,
-  flips, a drop and catch through dirty_air's air - and searches its
-  Betaflight settings (P, I, D, D-max, feedforward per axis, then TPA,
-  dynamic idle, anti-gravity, thrust linear) for the smallest tracking
-  error, within bounds for its class (D at most 1.5 x Betaflight's default
-  D-max with the RPM filter: the sim has no gyro noise or motor heat) and
-  without more motor saturation or more ringing than the flown tune on a
-  plant with less inertia and more motor delay. The filters stay as flown.
-  The result is a new model of yours, "<name> (tuned)": the same plant,
-  the tuned settings, and a report (flown and tuned per setting, what
-  limited it, the predicted changes, what is not modelled). It is for the
-  simulator only, not a tune to copy to the real quad. A few minutes.
+  Optimized tune (a build of grade A or B): how would the quad probably
+  fly when well tuned? The build then also flies the model in the
+  simulator - your own sticks from the logs, stick steps at idle, hover and
+  full throttle, flips, a drop and catch through dirty_air's air - and
+  searches its Betaflight settings (P, I, D, D-max, feedforward per axis,
+  then TPA, dynamic idle, anti-gravity, thrust linear) for the smallest
+  tracking error, within bounds for its class (D at most 1.5 x
+  Betaflight's default D-max with the RPM filter: the sim has no gyro noise
+  or motor heat) and without more motor saturation, overshoot or ringing on
+  a plant with less inertia and more motor delay than the flown tune. The
+  filters stay as flown. The result stays in the model (fc_optimized.json,
+  and tune.md: flown and optimized per setting, what stopped each, the
+  predicted changes, what is not modelled; the model's page shows it above
+  the report); a drone flies it when its tune setting is "optimized" (see
+  SETTINGS; the built-in models come with theirs). A few minutes more for
+  the build. Simulator only, not a tune to copy to the real quad.
 
 
 WITH THE OTHER MODS
@@ -289,6 +291,10 @@ SETTINGS
         rates: "game" (the default: the sticks' rates are the game's own,
           Pause > Rates, and follow a change at once) or "model" (the
           rates of the model's own Betaflight setup)
+        tune: "flown" (the default: the real quad's Betaflight tune from
+          its logs) or "optimized" (the model's optimized tune, see
+          MODELS; without one, or out of date, the flown tune flies and the
+          status line says why). A change counts at once
         propwash: the strength of the prop wash, 1 = as calibrated, 0 =
           none (times the wash and wake the model hands to dirty_air)
         drag: the props' drag on the quad moving across them, 1/s at hover;

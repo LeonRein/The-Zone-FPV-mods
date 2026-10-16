@@ -1,11 +1,12 @@
 extends RefCounted
-## real_quad logfit: autotune - the "tuned twin" of a model: the same plant flown with the Betaflight
-## settings that fly it best in the simulator ("how would my quad probably fly when well tuned").
+## real_quad logfit: autotune - the optimized tune of a model: the Betaflight settings that fly its plant best in
+## the simulator ("how would my quad probably fly when well tuned"), made by the build (build.gd step 9c, grade
+## A/B), kept in the package (fc_optimized.json, tune.md) and flown when a drone's tune setting says "optimized".
 ## Simulator only: nothing here is meant for the real quad (no CLI), and the filters stay as flown.
 ##
 ## The flights (calibrate.gd's Sim: bf_model.gd through Godot's integrate_forces() path at 500 Hz ticks,
 ## no scene tree; worker threads, each with its own models; fixed seeds, so every result is deterministic):
-##   replay     the pilot's own sticks: the REPLAY_N busiest 4-s windows of the package's logs (if it has any)
+##   replay     the pilot's own sticks: the REPLAY_N busiest 4-s windows of the build's logs
 ##   steps      roll, pitch and yaw stick steps at hover throttle, near idle, and roll steps at full throttle
 ##   flip       a full-stick roll and a pitch flip at low throttle, then the catch
 ##   propwash   calibrate.gd's drop and catch through dirty_air's air (if installed), PW_SEEDS seeds
@@ -31,7 +32,6 @@ const Calibrate := preload("calibrate.gd")
 const Classes := preload("classes.gd")
 const BFModel := preload("../../flightmodel/bf_model.gd")
 const Flight := preload("flight.gd")
-const BBL := preload("../bbl_decoder.gd")
 const Num := preload("num.gd")
 
 const TICK_HZ := 500.0
@@ -52,7 +52,6 @@ const PERTURB_INERTIA := 0.8
 const PERTURB_DELAY := 1.5
 const REPLAY_N := 3
 const REPLAY_S := 4.0
-const REPLAY_LOGS := 2               # the largest logs of the package are read
 const SETTLE_S := 1.0                # the replay's first second only brings the quad into the flight
 const HOVER_S := 1.5                 # the hover before each flight
 const MAX_THREADS := 8
@@ -519,34 +518,36 @@ static func _tmp_package(craft: Dictionary, fc: Dictionary, plant: Dictionary) -
 	return dir
 
 
-## The package's logs (logs/ in dir: the REPLAY_LOGS largest) as Flight sessions
-static func read_logs(dir: String) -> Array:
-	var ld := dir.path_join("logs")
-	var files: Array = []
-	for f in DirAccess.get_files_at(ld):
-		if f.get_extension().to_lower() in ["bbl", "bfl", "txt"]:
-			var fa := FileAccess.open(ld.path_join(f), FileAccess.READ)
-			if fa != null:
-				files.append([fa.get_length(), f])
-				fa.close()
-	files.sort_custom(func(a, b): return a[0] > b[0] or (a[0] == b[0] and a[1] < b[1]))
-	var out: Array = []
-	for x in files.slice(0, REPLAY_LOGS):
-		var p := ld.path_join(x[1])
-		var ss: Array = BBL.new().decode(p)
-		for k in ss.size():
-			var L := Flight.new()
-			L.load(p, ss[k], k)
-			out.append(L)
-	return out
+# ------------------------------------------------------------------ the package
+
+## fc_optimized.json: the tuned settings and, as "_tune", what they were made from (the SHA-256 of the texts of
+## fc.json and plant.json: bf_model flies them only with those) and the record
+static func optimized_json(tuned: Dictionary, fc_text: String, plant_text: String, rec: Dictionary) -> Dictionary:
+	var o := tuned.duplicate(true)
+	o["_tune"] = {"fc_sha256": fc_text.sha256_text(), "plant_sha256": plant_text.sha256_text(),
+		"created": Time.get_datetime_string_from_system(true) + "+00:00", "record": rec}
+	return o
+
+
+## The line for the build's report: "Optimized tune (tune.md): ..." or why there is none
+static func summary(rec: Variant, grade: String) -> String:
+	if not (rec is Dictionary):
+		return "No optimized tune: grade %s, the plant is not identified well enough for it" % grade if grade in ["C", "D"] else "No optimized tune: %s" % str(rec)
+	var parts: Array = []
+	var f: Dictionary = rec.flown.groups
+	var t: Dictionary = rec.tuned.groups
+	for g in ["replay", "steps", "propwash"]:
+		if f.has(g):
+			parts.append("%s %+.0f %%" % [{"replay": "your sticks", "steps": "stick steps", "propwash": "prop wash"}[g], 100.0 * (float(t[g]) / maxf(float(f[g]), 1e-6) - 1.0)])
+	return "Optimized tune (tune.md, simulator only): tracking error %s" % ", ".join(parts)
 
 
 # ------------------------------------------------------------------ the report
 
-## report.md of the tuned twin
+## tune.md: the optimized tune
 static func report_md(name: String, flown: Dictionary, tuned: Dictionary, rec: Dictionary) -> String:
-	var L: Array = ["# %s (tuned twin)" % name, "",
-		"How this quad would probably fly when well tuned: the same identified plant as %s, flown in the simulator with the Betaflight settings below. **Simulator only** - not a tune for the real quad: no noise, motor heat or frame resonances are simulated, and the filters stay as flown." % name, "",
+	var L: Array = ["# Optimized tune of %s" % name, "",
+		"How this quad would probably fly when well tuned: its identified plant flown in the simulator with the Betaflight settings below (a drone flies them when its tune setting in real_quad's settings is \"optimized\"). **Simulator only** - not a tune for the real quad: no noise, motor heat or frame resonances are simulated, and the filters stay as flown.", "",
 		"## Settings", "", "| Setting | Flown | Tuned | Stopped by (the last tries) |", "|---|---|---|---|"]
 	for k in STAGE1 + STAGE2:
 		if not _tunable(flown, k):
