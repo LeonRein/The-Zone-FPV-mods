@@ -71,6 +71,7 @@ var _vel := Vector3()                # world velocity at the end of the last tic
 var _set_lin := Vector3()            # velocities handed to Godot last tick (to detect contacts)
 var _set_ang := Vector3()
 var _have_state := false
+var _prev_om := Vector3()            # body rates of the last PID step [deg/s] (the gyro samples in between)
 
 
 ## package_dir holds craft.json (identity, camera), fc.json (Betaflight settings) and plant.json
@@ -537,6 +538,7 @@ func integrate_forces(_body: RigidBody3D, state: PhysicsDirectBodyState3D, rc: D
 	if not _have_state or lin.distance_to(_set_lin) > 1e-3 or ang.distance_to(_set_ang) > 1e-3:
 		_vel = lin
 		quad.omega = Quad.local_to_flu(basis.inverse() * ang)
+		_prev_om = quad.omega * (180.0 / PI)
 		_have_state = true
 	if armed != _armed:
 		fc.arm(armed)
@@ -544,7 +546,10 @@ func integrate_forces(_body: RigidBody3D, state: PhysicsDirectBodyState3D, rc: D
 	var rcdata := rc_to_rcdata(rc, _deadband, _yaw_deadband)
 	var n_sub := maxi(1, roundi(tick_dt / fc.dt))
 	var dt := tick_dt / float(n_sub)
-	var gyro := PackedFloat64Array([0, 0, 0])
+	var n_gyro := fc.gyro_per_pid
+	var gyro := PackedFloat64Array()
+	gyro.resize(3 * n_gyro)
+	var vib := PackedFloat64Array([0, 0, 0])
 	var telemetry_hz := PackedFloat64Array([0, 0, 0, 0])
 	var ud := PackedFloat64Array([0, 0, 0, 0])
 	var ang_sum := Vector3()
@@ -567,12 +572,18 @@ func integrate_forces(_body: RigidBody3D, state: PhysicsDirectBodyState3D, rc: D
 			f.rx_frame(rcdata, _t_us + 1)
 			_next_frame_us += _rx_frame_us
 		f.t_us = _t_us
+		f.set_vbat(q.v_batt / q.volts_per_pack_volt, cells)
+		# the gyro samples of this PID step at the gyro rate, oldest first: the body rates in between
 		var om := q.omega * (180.0 / PI)
-		gyro[0] = om.x
-		gyro[1] = om.y
-		gyro[2] = om.z
+		vib.fill(0.0)
 		if vib_lvl > 0.0:
-			_vibrate(gyro, dt, vib_a, vib_sc)
+			_vibrate(vib, dt, vib_a, vib_sc)
+		for j in n_gyro:
+			var s := _prev_om.lerp(om, float(j + 1) / float(n_gyro))
+			gyro[3 * j] = s.x + vib[0]
+			gyro[3 * j + 1] = s.y + vib[1]
+			gyro[3 * j + 2] = s.z + vib[2]
+		_prev_om = om
 		telemetry_hz[0] = w[0] / TAU
 		telemetry_hz[1] = w[1] / TAU
 		telemetry_hz[2] = w[2] / TAU
