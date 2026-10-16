@@ -71,6 +71,8 @@ var _vel := Vector3()                # world velocity at the end of the last tic
 var _set_lin := Vector3()            # velocities handed to Godot last tick (to detect contacts)
 var _set_ang := Vector3()
 var _have_state := false
+var tune := "flown"                  # the tune flying: "flown" (fc.json) or "optimized" (fc_optimized.json, use_tune())
+var _flown_cfg := {}                 # fc.json as read
 var _prev_om := Vector3()            # body rates of the last PID step [deg/s] (the gyro samples in between)
 
 
@@ -88,6 +90,7 @@ func _init(p_package_dir: String) -> void:
 	_yaw_deadband = clampf(float(fc_cfg.get("yaw_deadband", 0.0)), 0.0, 499.0)
 	quad = Quad.new(plant_params)
 	_cd_area0 = quad.cd_area
+	_flown_cfg = fc_cfg.duplicate(true)
 	for k in ["rates_type", "rc_rates", "rates", "rc_expo"]:
 		_pkg_rates[k] = fc_cfg[k].duplicate() if fc_cfg[k] is Array else fc_cfg[k]
 	var bat: Dictionary = craft.get("battery", {}) if craft.get("battery", {}) is Dictionary else {}
@@ -187,6 +190,50 @@ func use_package_rates() -> void:
 	for k in _pkg_rates:
 		fc_cfg[k] = _pkg_rates[k].duplicate() if _pkg_rates[k] is Array else _pkg_rates[k]
 	fc.update_rates()
+
+
+## The package's optimized tune (fc_optimized.json, made by the model manager's autotune) if it is there and was
+## made from this fc.json and plant.json: its settings, else {} and why not
+static func optimized_tune(dir: String) -> Array:
+	var d := _load_quiet(dir.path_join("fc_optimized.json"))
+	if d.is_empty():
+		return [{}, "the model has no optimized tune"]
+	var t: Dictionary = d.get("_tune", {}) if d.get("_tune") is Dictionary else {}
+	if str(t.get("fc_sha256", "")) != FileAccess.get_sha256(dir.path_join("fc.json")) \
+			or str(t.get("plant_sha256", "")) != FileAccess.get_sha256(dir.path_join("plant.json")):
+		return [{}, "its optimized tune is out of date (the model was rebuilt or recalibrated)"]
+	return [d, ""]
+
+
+static func _load_quiet(path: String) -> Dictionary:
+	var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(path)) if FileAccess.file_exists(path) else null
+	return d if d is Dictionary else {}
+
+
+## Flies the flown tune (fc.json) or the optimized one (fc_optimized.json): the rates in use stay, the
+## controller starts again (armed as it was). Returns what flies: "flown tune", "optimized tune", or the flown
+## tune with why the optimized one cannot fly.
+func use_tune(want: String) -> String:
+	var cfg := _flown_cfg
+	var why := ""
+	if want == "optimized":
+		var o := optimized_tune(package_dir)
+		cfg = o[0] if not (o[0] as Dictionary).is_empty() else _flown_cfg
+		why = o[1]
+	var now := "optimized" if want == "optimized" and why == "" else "flown"
+	if now != tune:
+		var keep := {}
+		for k in _pkg_rates:
+			keep[k] = fc_cfg[k]
+		fc_cfg = cfg.duplicate(true)
+		fc_cfg.merge(keep, true)
+		var old := fc
+		_new_controller()
+		fc.arm(_armed)
+		fc.throttle_raised = old.throttle_raised
+		fc.airmode_active = old.airmode_active
+		tune = now
+	return "optimized tune" if now == "optimized" else "flown tune" + (" (%s)" % why if why != "" else "")
 
 
 ## The highest rate the sticks ask for now [deg/s] (the game's OSD readout curr_max_rate)

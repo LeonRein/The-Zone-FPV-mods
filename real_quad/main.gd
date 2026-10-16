@@ -43,14 +43,15 @@ const DEFAULTS := {
 	"unknown_game_version": false,
 }
 # What each drone's section sets (see settings.default.cfg)
-const DRONE_DEFAULTS := {"model": "auto", "propwash": 1.0, "drag": 0.0, "rates": "game"}
+const DRONE_DEFAULTS := {"model": "auto", "propwash": 1.0, "drag": 0.0, "rates": "game", "tune": "flown"}
 
 var cfg := DEFAULTS.duplicate()
 var registry: ModelRegistry = null
 var on := false                     # the player script is replaced: drones with a model are flown by it
 var generation := 0                 # counts settings.cfg reads, for the hook
 var own_pack := {}                  # the pack a model flies on without battery_sag (zm_battery)
-var drones := {}                    # vehicle id -> {model, propwash, drag, rates}
+var drones := {}                    # vehicle id -> {model, propwash, drag, rates, tune}
+var tune_notes := {}                # vehicle id -> the tune its model flies (the hook's, for the status line)
 var settings_path := DIR + "settings.cfg"
 var _core: Node = null
 var _copied := false
@@ -85,7 +86,7 @@ func zm_init(core: Node, _dir: String) -> void:
 
 
 ## Reads settings.cfg (settings.default.cfg when there is none): [real_quad] and a
-## section per drone with model, propwash, drag and rates
+## section per drone with model, propwash, drag, rates and tune
 func read_settings(path := settings_path) -> void:
 	settings_path = path
 	var c := ConfigFile.new()
@@ -112,6 +113,7 @@ func read_settings(path := settings_path) -> void:
 			"propwash": clampf(float(d["propwash"]), 0.0, 5.0),
 			"drag": clampf(float(d["drag"]), 0.0, 3.0),
 			"rates": "model" if str(d["rates"]).strip_edges() == "model" else "game",
+			"tune": "optimized" if str(d["tune"]).strip_edges() == "optimized" else "flown",
 		}
 		if model == "off":
 			overrides.set_value("vehicle_models", sec, ModelRegistry.NONE)
@@ -152,12 +154,15 @@ func _flying_status() -> String:
 		return "Flying now: no drone yet."
 	var mid := model_id_for(vid)
 	var how := str(drone_cfg(vid)["model"])
-	return "Flying now: %s%s. A model's weight, thrust and top speed come from the model, not from the game's Physics menu." % [
-		mid if mid != "" else "the game's physics", " (%s)" % how if how == "auto" or how == "off" else ""]
+	var tune := ", " + str(tune_notes[vid]) if mid != "" and tune_notes.has(vid) and drone_cfg(vid)["tune"] == "optimized" else ""
+	return "Flying now: %s%s%s. A model's weight, thrust and top speed come from the model, not from the game's Physics menu." % [
+		mid if mid != "" else "the game's physics", " (%s)" % how if how == "auto" or how == "off" else "", tune]
 
 
-## Mod_settings' choices for a drone's "model": auto, off, then every model there is
+## Mod_settings' choices for a drone's "model": auto, off, then every model there is; its "tune": flown, optimized
 func zm_settings_choices(section: String, key: String) -> PackedStringArray:
+	if key == "tune" and section != "real_quad":
+		return PackedStringArray(["flown", "optimized"])
 	if key != "model" or section == "real_quad" or registry == null:
 		return PackedStringArray()
 	var out := PackedStringArray(["auto", "off"])

@@ -19,9 +19,6 @@ extends RefCounted
 ##       the log metric in its logfit.json: {ok, text (the summary line), errors}; rewrites plant.json and the
 ##       report's calibration lines, nothing else (cancelled or failed: nothing)
 ##   Calibrate.stale(plant)         # {recalibrate, why}: the installed dirty_air is not the one it was calibrated with
-##   var t: Dictionary = lf.autotune(package_dir, progress)
-##       the tuned twin (fit/autotune.gd, simulator only): {ok, fc (the tuned fc.json), record, report_md, errors};
-##       writes nothing (the model manager writes the twin's package)
 ##
 ## form (the window's, logfit/window.gd): name, weight_g, cells, pack_type (lipo | lihv | liion), kv,
 ## class, zone_vehicle_id and optionally capacity_mah, prop_in, pitch_in, blades, wheelbase_mm,
@@ -38,12 +35,9 @@ const Build := preload("fit/build.gd")
 const Calibrate := preload("fit/calibrate.gd")
 const Scan := preload("fit/scan.gd")
 const Craft := preload("fit/craft.gd")
-const Autotune := preload("fit/autotune.gd")
-const Classes := preload("fit/classes.gd")
 
 var _job: Build = null
 var _cal: Calibrate = null
-var _at: Autotune = null
 var _cancel := false
 var _mutex := Mutex.new()
 
@@ -55,8 +49,6 @@ func cancel() -> void:
 		_job.cancel()
 	if _cal != null:
 		_cal.cancel()
-	if _at != null:
-		_at.cancel()
 	_mutex.unlock()
 
 
@@ -235,45 +227,3 @@ func recalibrate(dir: String, progress: Callable = Callable()) -> Dictionary:
 		Build._write_text(dir.path_join("report.md"), Calibrate.report_md(md, rec))     # (plant.json is what counts)
 	return {"ok": true, "text": Calibrate.summary(rec), "errors": [], "record": rec}
 
-
-
-## The tuned twin of the package in dir (fit/autotune.gd; the pilot's sticks from its logs/ if it has any).
-## progress.call(step_name, fraction). {ok, fc, record, report_md, errors: [message]}; writes nothing.
-func autotune(dir: String, progress: Callable = Callable()) -> Dictionary:
-	var fail := func(text: String) -> Dictionary:
-		return {"ok": false, "errors": [{"text": text, "fix": "", "big": false, "overridable": false, "code": "autotune", "level": "error"}]}
-	var rd := func(n: String) -> Dictionary:
-		var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(dir.path_join(n))) if FileAccess.file_exists(dir.path_join(n)) else null
-		return d if d is Dictionary else {}
-	var craft: Dictionary = rd.call("craft.json")
-	var fc: Dictionary = rd.call("fc.json")
-	var plant: Dictionary = rd.call("plant.json")
-	if craft.is_empty() or fc.is_empty() or plant.is_empty():
-		return fail.call("The model's package is incomplete (craft.json, fc.json, plant.json).")
-	var cls := str(craft.get("class", ""))
-	if not Classes.TUNE.has(cls):
-		cls = Classes.estimate(float(plant.get("mass", 0.5)) * 1000.0)
-	_mutex.lock()
-	_at = Autotune.new()
-	var at := _at
-	if _cancel:
-		at.cancel()
-	_mutex.unlock()
-	if progress.is_valid():
-		progress.call("Reading the logs", 0.0)
-	var logs := Autotune.read_logs(dir) if not at.cancel_flag else []
-	at.progress = func(fr: float) -> void:
-		if progress.is_valid():
-			progress.call("Tuning", fr)
-	var r := at.run(craft, fc, plant, logs, cls)
-	_mutex.lock()
-	_at = null
-	var cancelled := _cancel
-	_cancel = false
-	_mutex.unlock()
-	if cancelled:
-		return fail.call("Cancelled.")
-	if not bool(r.ok):
-		return fail.call("The autotune failed: %s." % r.why)
-	return {"ok": true, "fc": r.fc, "record": r.record, "errors": [],
-		"report_md": Autotune.report_md(str(craft.get("name", "")), fc, r.fc, r.record)}
