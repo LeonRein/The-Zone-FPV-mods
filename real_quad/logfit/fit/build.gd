@@ -516,10 +516,10 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 	var R := Motor.torque_path(rows, sims, LL, chirp_masks, Motor.TP_FREQS, _cancelled) if use_chirp else {}
 	if cancel_flag:
 		return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
-	if not R.is_empty() and not (R.re + R.im).any(func(c): return Array(c).any(func(v): return is_nan(v))):
+	if not R.is_empty() and not (R.re + R.im + R.coh).any(func(c): return Array(c).any(func(v): return is_nan(v))):
 		# the speed and dead time from the gyro (the eRPM lags), the steady state stays
 		var tau0 := Num.mean(Motor.time_constant(P, R.w, kv_rad))
-		var tr := Motor.torque_refine(R, tau0)
+		var tr := Motor.torque_fit(R, tau0)
 		delay = Num.pyround(clampf(Motor.DELAY_S + tr[1], 0.0, Motor.DELAY_MAX_S), 4)
 		P = Motor.scaled(P, tr[0])
 		sims = Num.parallel_for(rows.size(), func(k: int) -> Array:
@@ -528,7 +528,7 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 			return Motor.simulate(r, P, V, kv_rad, PackedFloat64Array(), 4, _cancelled))
 		if cancel_flag:
 			return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
-		torque = {"lambda": tr[0], "delay_s": delay, "tau0_s": tau0, "R": [R.re, R.im], "w": R.w}
+		torque = {"lambda": tr[0], "delay_s": delay, "tau0_s": tau0, "R": [R.re, R.im], "coh": R.coh, "w": R.w}
 	rep.motor(P0, P, lam, rd[1], rd[2], r2, V, gain, frh, torque)
 	steps["03_motor"] = {"P0": P0, "V": V, "r2": r2, "lambda": lam, "rms_before": rd[1], "rms_after": rd[2], "P": P, "free_run_hz": frh,
 		"gain": gain, "torque": torque, "motor_s": motor_s}
@@ -602,9 +602,11 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 		for ax in 2:
 			var k: float = fit[Rotation.AX[ax]].coef[0] * 1e-6
 			var r := PackedFloat64Array()
+			var ph := PackedFloat64Array()
 			for i in Motor.TP_FREQS.size():
 				r.append(sqrt(Rf.re[ax][i] * Rf.re[ax][i] + Rf.im[ax][i] * Rf.im[ax][i]) / k)
-			tq.append(r)
+				ph.append(rad_to_deg(atan2(Rf.im[ax][i], Rf.re[ax][i])))
+			tq.append([r, ph])
 	rep.rotation(fit, rp, kQ, yaw_rev, use_chirp, chirp_s, band, tq)
 	rep.default("Izz", "%s kg·m²" % Report.fmt_g(rp.Izz, 3), "1.7 × mean roll/pitch inertia (only J_rotor/Izz is measured)")
 	steps["05_rotation"] = {"chirp_s": chirp_s, "use_chirp": use_chirp, "band": band, "n_rows": fa[1], "n_rows_yaw": fa[2], "yaw_source": yaw_src,
