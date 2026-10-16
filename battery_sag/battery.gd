@@ -33,7 +33,9 @@ extends Node
 ## under load would, all flight long - against the same thrust_at_cell_volts,
 ## so 3.8 is a little more than the game's tuning and 3.4 a little less -
 ## with no drain or sag in the handling (the OSD shows that voltage; the mAh
-## still count).
+## still count). It does nothing for a quad another mod flies with a flight
+## model (below): that model's motors run on the pack's real voltage, which
+## is also what the OSD shows.
 ##
 ## Packs: each of the game's quads gets a pack of its own (PACKS, and a
 ## section of settings.cfg per quad), picked from the quad you have selected
@@ -439,7 +441,9 @@ func motor_scale(throttle: float) -> float:
 
 
 func report() -> Dictionary:
-	return {"cell_voltage": _hold() if _hold() > 0.0 else cell_voltage, "mah_used": mah_used, "cells": cells(), "current": current,
+	# hold_cell_volts is for the game's quad: a modelled quad's motors run on
+	# source_volts(), so its pack's real voltage is what the OSD shows
+	return {"cell_voltage": _hold() if _hold() > 0.0 and not external else cell_voltage, "mah_used": mah_used, "cells": cells(), "current": current,
 		"lihv": bool(pack["lihv"]), "capacity_mah": capacity_mah(), "pack": describe(pack)}
 
 

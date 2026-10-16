@@ -1,4 +1,4 @@
-battery_sag 1.3
+battery_sag 1.3.1
 =====================
 
 A flight pack for The Zone FPV that drains, sags under load and changes how
@@ -77,7 +77,9 @@ SETTINGS
   would, all flight long, with no drain or sag in the handling: 3.8 is a
   little stronger than the game's tuning (its motors get 3.8 / 3.6 of the
   game's voltage), 3.4 a little weaker, 3.6 exactly the game's. The OSD
-  shows that voltage and the mAh still count. 0 (as shipped) = off.
+  shows that voltage and the mAh still count. 0 (as shipped) = off. It does
+  nothing for a quad a flight model flies (real_quad): its motors run on
+  the pack's real voltage, which is what the OSD shows then.
 
 
 HOW IT WORKS
