@@ -92,27 +92,20 @@ static func canonical_order(paths: PackedStringArray) -> PackedStringArray:
 
 # ------------------------------------------------------------- decoding --
 
-## Decodes the files (one worker thread per file, up to cores - 1 at a time), in canonical order:
+## Decodes the files (in parallel, one task per file), in canonical order:
 ## [{name, size, sha256, path, sessions: [Flight], error ("" | csv | unreadable | not_blackbox), why}].
 ## Session ids are made unique (unique_names()).
 func load_files(paths: PackedStringArray, from_frac: float = 0.0, to_frac: float = 0.25) -> Array:
 	var out: Array = []
 	for p in paths:
 		out.append({"path": p, "name": p.get_file(), "size": 0, "sha256": "", "sessions": [], "error": "", "why": ""})
-	var nthreads := maxi(1, mini(OS.get_processor_count() - 1, 8))
-	var next := 0
-	var running: Array = []
-	var done := 0
-	while next < paths.size() or not running.is_empty():
-		while running.size() < nthreads and next < paths.size():
-			var th := Thread.new()
-			th.start(_load_one.bind(out[next]), Thread.PRIORITY_LOW)
-			running.append(th)
-			next += 1
-		var th0: Thread = running.pop_front()
-		th0.wait_to_finish()
-		done += 1
-		_say("Reading the logs", from_frac + (to_frac - from_frac) * done / maxi(paths.size(), 1))
+	var done := [0]
+	Num.parallel_for(paths.size(), func(i: int) -> void:
+		_load_one(out[i])
+		_mutex.lock()
+		done[0] += 1
+		_say("Reading the logs", from_frac + (to_frac - from_frac) * done[0] / paths.size())
+		_mutex.unlock())
 	unique_names(out)
 	return out
 
@@ -391,12 +384,13 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 
 	# sensor plausibility
 	var san := {}
-	for L: Flight in used:
-		if cancel_flag:
-			return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
-		var r := Checks.sanity(L, rough_thr[L.name], ncell, pack, erpm_limit, _cancelled)
-		if cancel_flag:
-			return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
+	var sane := Num.parallel_for(used.size(), func(k: int) -> Dictionary:
+		return Checks.sanity(used[k], rough_thr[used[k].name], ncell, pack, erpm_limit, _cancelled))
+	if cancel_flag:
+		return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
+	for k in used.size():
+		var L: Flight = used[k]
+		var r: Dictionary = sane[k]
 		san[L.name] = r.metrics
 		warns.append_array(r.issues)
 		if r.drop_acc:
@@ -437,13 +431,9 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 
 	# 1 segment
 	_say("Finding the usable flight", 0.3)
-	var segs: Array = []
-	for x in LL:
-		if cancel_flag:
-			return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
-		segs.append(Segments.segment_log(x, erpm_limit, _cancelled))
-		if cancel_flag:
-			return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
+	var segs := Num.parallel_for(LL.size(), func(k: int) -> Dictionary: return Segments.segment_log(LL[k], erpm_limit, _cancelled))
+	if cancel_flag:
+		return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
 	var uses: Array = []
 	for k in LL.size():
 		uses.append(Segments.mask_from_windows(LL[k].t, segs[k].use))
@@ -475,11 +465,9 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 
 	# 3 motor
 	_say("Motor and ESC model", 0.37)
-	var rows: Array = []
-	for k in LL.size():
-		rows.append(Motor.prep(LL[k], uses[k], Motor.DELAY_S, _cancelled))
-		if cancel_flag:
-			return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
+	var rows := Num.parallel_for(LL.size(), func(k: int) -> Dictionary: return Motor.prep(LL[k], uses[k], Motor.DELAY_S, _cancelled))
+	if cancel_flag:
+		return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
 	var motor_s := 0.0
 	for k in LL.size():
 		motor_s += float((rows[k].ok as PackedByteArray).count(1)) / LL[k].fs
@@ -498,11 +486,7 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 		return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
 	var lam: float = rd[0]
 	var P := Motor.scaled(P0, lam)
-	var sims: Array = []
-	for r in rows:
-		if cancel_flag:
-			return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
-		sims.append(Motor.simulate(r, P, V, kv_rad, PackedFloat64Array(), 4, _cancelled))
+	var sims := Num.parallel_for(rows.size(), func(k: int) -> Array: return Motor.simulate(rows[k], P, V, kv_rad, PackedFloat64Array(), 4, _cancelled))
 	if cancel_flag:
 		return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
 	var frh := {}

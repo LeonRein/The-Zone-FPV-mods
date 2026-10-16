@@ -30,7 +30,6 @@ const AIR := "res://dirty_air/air.gd"
 const AIR_CFG := "res://dirty_air/zonemod.cfg"
 const DROP_PER_P99 := 14.5 / 11.3
 const SEEDS := 32                    # seeds 1..SEEDS by default
-const MAX_THREADS := 8
 const TICK_HZ := 500.0
 const HOVER_H := 60.0
 const MAX_EVAL := 8
@@ -248,27 +247,12 @@ func _search(sims: Array, p: Dictionary, key: String, scen: String, target: floa
 	return best
 
 
-## The scenario's metric with plant values p, mean over the seeds (up to MAX_THREADS threads)
+## The scenario's metric with plant values p, mean over the seeds (each flown by a worker pool task: own model and air)
 func _eval(sims: Array, p: Dictionary, scen: String) -> float:
 	_apply(sims, p)
-	var res := []
-	res.resize(sims.size())
-	var nth := clampi(OS.get_processor_count() - 1, 1, MAX_THREADS)
-	var threads: Array = []
-	for t in mini(nth, sims.size()):
-		var th := Thread.new()
-		th.start(_worker.bind(sims, scen, t, nth, res), Thread.PRIORITY_LOW)
-		threads.append(th)
-	for th in threads:
-		th.wait_to_finish()
+	var res := Num.parallel_for(sims.size(), func(i: int) -> float: return sims[i].run(scen))
 	evals += 1
 	return Num.mean(PackedFloat64Array(res))
-
-
-## Flies every nth seed from first (a worker thread; each seed its own model and air)
-static func _worker(sims: Array, scen: String, first: int, nth: int, res: Array) -> void:
-	for i in range(first, sims.size(), nth):
-		res[i] = sims[i].run(scen)
 
 
 func _apply(sims: Array, p: Dictionary) -> void:
