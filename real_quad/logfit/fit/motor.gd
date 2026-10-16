@@ -1,12 +1,14 @@
 extends RefCounted
 ## real_quad logfit: motor/ESC/prop dynamics from the DShot command to the rotor speed (eRPM).
 ##
-## Model per motor (rotor speed w [rad/s], command u 0..1, voltage V), command delayed by 1 ms:
+## Model per motor (rotor speed w [rad/s], command u 0..1, voltage V), command delayed by D (1 ms for the eRPM fit):
 ##     dw/dt = a * (u * V - w / Kv) - b * w^2 - c
 ## V is the "model voltage": the logged vbat (low-passed) times one global scale where logged (absorbs
 ## ESC losses and a rated Kv that differs from the real one), else one value per 2-s window.
-## a, b, c, the scale and the window voltages come from alternating least squares (fit()); then a, b,
-## c are scaled together by lambda (refine_dynamics(), golden section on the free-run error).
+## a, b, c, the scale and the window voltages come from alternating least squares (fit(), the static map); then a, b,
+## c are scaled together by lambda (refine_dynamics(), golden section on the free-run error against eRPM); with chirps
+## the speed and D are then set by the gyro (torque_refine(): the eRPM telemetry lags and smooths the rotor speed,
+## so the eRPM alone makes the motors too slow).
 ##
 ## A "row" is one session prepared by prep(): {name, t, u[4], w[4], dw[4], ok, win, vbat}. Voltages V:
 ## {"vbat_scale": s, "<session>|<window>": volts}. P: 4 x [a, b, c] (Array of PackedFloat64Array).
@@ -20,6 +22,10 @@ const LAMBDA_LO := 0.7
 const LAMBDA_HI := 3.5
 const SUBSET_BLOCK := 5000
 const VBAT_SCALE := "vbat_scale"
+const TP_FREQS := [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]   # torque path band [Hz]
+const TP_LAMBDA_LO := 0.5      # speed factor range of the torque path refinement
+const TP_LAMBDA_HI := 2.0
+const DELAY_MAX_S := 0.005
 
 
 ## cancel (optional): polled between the motors and every 10 000 samples of the long loops; when it answers
@@ -30,7 +36,6 @@ static func prep(L: Flight, use: PackedByteArray, delay_s: float = DELAY_S, canc
 	var n := L.n
 	var n_sg := roundi(0.009 * fs) | 1
 	var u0 := L.u()
-	var d := roundi(delay_s * fs)
 	var w: Array = []
 	var dw: Array = []
 	var u: Array = []
@@ -49,14 +54,7 @@ static func prep(L: Flight, use: PackedByteArray, delay_s: float = DELAY_S, canc
 			dd[i] = dd[i] * fs
 		dw.append(dd)
 		w.append(Num.savgol(wr, n_sg, 0))
-		var uc: PackedFloat64Array = u0[m]
-		if d > 0:
-			var ud := PackedFloat64Array()
-			ud.resize(n)
-			for i in n:
-				ud[i] = uc[maxi(i - d, 0)]
-			uc = ud
-		u.append(uc)
+		u.append(delayed(u0[m], delay_s, fs))
 	var ok := PackedByteArray()
 	ok.resize(n)
 	for i in n:
@@ -82,6 +80,19 @@ static func prep(L: Flight, use: PackedByteArray, delay_s: float = DELAY_S, canc
 	if L.has_vbat():
 		vb = Num.sosfiltfilt(Num.butter(2, 2.0, "lowpass", fs), L.vbat)
 	return {"name": L.name, "t": L.t, "u": u, "w": w, "dw": dw, "ok": ok, "win": win, "vbat": vb}
+
+
+## The commands delayed by delay_s (linear between the samples; the first sample held).
+static func delayed(x: PackedFloat64Array, delay_s: float, fs: float) -> PackedFloat64Array:
+	var d := delay_s * fs
+	var n := floori(d + 1e-9)
+	var f := d - n
+	var o := PackedFloat64Array()
+	o.resize(x.size())
+	for i in x.size():
+		var v := x[maxi(i - n, 0)]
+		o[i] = v if f < 1e-9 else (1.0 - f) * v + f * x[maxi(i - n - 1, 0)]
+	return o
 
 
 static func wkey(name: String, k: int) -> String:
@@ -556,16 +567,26 @@ static func refine_dynamics(rows: Array, P: Array, V: Dictionary, kv_rad: float,
 				se += s2 * k
 				nn += 4 * k
 		return sqrt(se / maxi(nn, 1))
-	var lo := LAMBDA_LO
-	var hi := LAMBDA_HI
+	var lam := golden(cost, LAMBDA_LO, LAMBDA_HI, 9)
+	if cancel.is_valid() and cancel.call():
+		return []
+	var c1: float = cost.call(1.0)
+	var cl: float = cost.call(lam)
+	if cancel.is_valid() and cancel.call():
+		return []
+	for r in rows:
+		r.erase("dw")      # the derivative of the rotor speed is only for fit(): a quarter of a row's memory
+	return [lam, c1, cl]
+
+
+## Golden section search: the middle of the last bracket.
+static func golden(cost: Callable, lo: float, hi: float, steps: int) -> float:
 	var g := (sqrt(5.0) - 1.0) / 2.0
 	var x1 := hi - g * (hi - lo)
 	var x2 := lo + g * (hi - lo)
 	var f1: float = cost.call(x1)
 	var f2: float = cost.call(x2)
-	for _k in 9:
-		if cancel.is_valid() and cancel.call():
-			return []
+	for _k in steps:
 		if f1 < f2:
 			hi = x2
 			x2 = x1
@@ -578,26 +599,19 @@ static func refine_dynamics(rows: Array, P: Array, V: Dictionary, kv_rad: float,
 			f1 = f2
 			x2 = lo + g * (hi - lo)
 			f2 = cost.call(x2)
-	var lam := (lo + hi) / 2.0
-	var c1: float = cost.call(1.0)
-	var cl: float = cost.call(lam)
-	if cancel.is_valid() and cancel.call():
-		return []
-	for r in rows:
-		r.erase("dw")      # the derivative of the rotor speed is only for fit(): a quarter of a row's memory
-	return [lam, c1, cl]
+	return (lo + hi) / 2.0
 
 
-## |measured / simulated| roll+pitch rotor-speed differential at a few frequencies (1 = right speed):
-## the bins of scipy.signal.csd / welch (nperseg 1024, Hann, half overlap) nearest to them.
-static func response_gain(rows: Array, sims: Array, freqs: Array = [5, 10, 20, 30], cancel: Callable = Callable()) -> Dictionary:
+## Roll / pitch differential of four columns at sample q.
+static func _diff(c: Array, q: int, axis: int) -> float:
+	return c[2][q] + c[3][q] - c[0][q] - c[1][q] if axis == 0 else c[0][q] + c[2][q] - c[1][q] - c[3][q]
+
+
+## csd(x, y) / psd(x) summed over pairs as scipy.signal.csd / welch (nperseg 1024, Hann, half overlap) at the bins nearest
+## freqs: {bins, cos, sin, win, xy_re, xy_im, xx}; _frf_add() adds a pair, _frf_ratio() gives [re, im] per bin (NAN without power).
+static func _frf_new(fs: float, freqs: Array) -> Dictionary:
 	var nper := 1024
-	var t0: PackedFloat64Array = rows[0].t
-	var dts := PackedFloat64Array()
-	for i in t0.size() - 1:
-		dts.append(t0[i + 1] - t0[i])
-	var fs := 1.0 / Num.median(dts)
-	var bins: Array[int] = []
+	var B := {"cos": [], "sin": [], "win": Num.hann(nper), "xy_re": Num.zeros(freqs.size()), "xy_im": Num.zeros(freqs.size()), "xx": Num.zeros(freqs.size())}
 	for f in freqs:
 		var best := 0
 		var bd := INF
@@ -606,30 +620,115 @@ static func response_gain(rows: Array, sims: Array, freqs: Array = [5, 10, 20, 3
 			if d < bd:
 				bd = d
 				best = k
-		bins.append(best)
-	var nb := bins.size()
-	var cosv: Array = []
-	var sinv: Array = []
-	var win := Num.hann(nper)
-	for b in bins:
 		var c := PackedFloat64Array()
 		var s := PackedFloat64Array()
 		c.resize(nper)
 		s.resize(nper)
 		for k in nper:
-			c[k] = cos(TAU * b * k / nper)
-			s[k] = -sin(TAU * b * k / nper)
-		cosv.append(c)
-		sinv.append(s)
-	var acc_xy_re := Num.zeros(nb)
-	var acc_xy_im := Num.zeros(nb)
-	var acc_xx := Num.zeros(nb)
-	var xs := PackedFloat64Array()
-	var xm := PackedFloat64Array()
+			c[k] = cos(TAU * best * k / nper)
+			s[k] = -sin(TAU * best * k / nper)
+		B.cos.append(c)
+		B.sin.append(s)
+	return B
+
+
+static func _frf_add(B: Dictionary, x: PackedFloat64Array, y: PackedFloat64Array) -> void:
+	var nper := 1024
+	var step := nper / 2
+	var nb: int = B.cos.size()
+	var win: PackedFloat64Array = B.win
+	var nseg := (x.size() - step) / step
+	if nseg <= 0:
+		return
+	var sxy_re := Num.zeros(nb)
+	var sxy_im := Num.zeros(nb)
+	var sxx := Num.zeros(nb)
+	for sg in nseg:
+		var o := sg * step
+		var mx := Num.psum(x, o, nper) / nper
+		var my := Num.psum(y, o, nper) / nper
+		for bi in nb:
+			var c: PackedFloat64Array = B.cos[bi]
+			var s: PackedFloat64Array = B.sin[bi]
+			var xr := 0.0
+			var xi := 0.0
+			var yr := 0.0
+			var yi := 0.0
+			for k in nper:
+				var vx := (x[o + k] - mx) * win[k]
+				var vy := (y[o + k] - my) * win[k]
+				xr += vx * c[k]
+				xi += vx * s[k]
+				yr += vy * c[k]
+				yi += vy * s[k]
+			# conj(X) * Y
+			sxy_re[bi] += xr * yr + xi * yi
+			sxy_im[bi] += xr * yi - xi * yr
+			sxx[bi] += xr * xr + xi * xi
+	for bi in nb:
+		B.xy_re[bi] += sxy_re[bi] / nseg
+		B.xy_im[bi] += sxy_im[bi] / nseg
+		B.xx[bi] += sxx[bi] / nseg
+
+
+static func _frf_ratio(B: Dictionary) -> Array:
+	var re := PackedFloat64Array()
+	var im := PackedFloat64Array()
+	for bi in (B.xx as PackedFloat64Array).size():
+		var xx: float = B.xx[bi]
+		re.append(B.xy_re[bi] / xx if xx > 0.0 else NAN)
+		im.append(B.xy_im[bi] / xx if xx > 0.0 else NAN)
+	return [re, im]
+
+
+static func _fs(rows: Array) -> float:
+	var t0: PackedFloat64Array = rows[0].t
+	var dts := PackedFloat64Array()
+	for i in t0.size() - 1:
+		dts.append(t0[i + 1] - t0[i])
+	return 1.0 / Num.median(dts)
+
+
+## |measured / simulated| roll+pitch rotor-speed differential at a few frequencies (1 = right speed).
+static func response_gain(rows: Array, sims: Array, freqs: Array = [5, 10, 20, 30], cancel: Callable = Callable()) -> Dictionary:
+	var B := _frf_new(_fs(rows), freqs)
 	for ri in rows.size():
 		var r: Dictionary = rows[ri]
-		var sim: Array = sims[ri]
 		var rr := Num.runs(r.ok)
+		for j in range(0, rr.size(), 2):
+			if rr[j + 1] - rr[j] < 2048:
+				continue
+			if cancel.is_valid() and cancel.call():
+				return {}
+			for axis in 2:
+				var xs := PackedFloat64Array()
+				var xm := PackedFloat64Array()
+				for q in range(rr[j], rr[j + 1]):
+					xs.append(_diff(sims[ri], q, axis))
+					xm.append(_diff(r.w, q, axis))
+				_frf_add(B, xs, xm)
+	var H := _frf_ratio(B)
+	var out := {}
+	for bi in freqs.size():
+		var re: float = H[0][bi]
+		var im: float = H[1][bi]
+		out[freqs[bi]] = null if is_nan(re) else Num.pyround(sqrt(re * re + im * im), 2)
+	return out
+
+
+## The torque path of the free run against the gyro over the chirps: per roll / pitch csd(x, y) / psd(x) at freqs with
+## x the rotor speed squared differential of the free run and y the logged angular acceleration (gyroUnfilt), over the
+## runs of >= 2048 ok samples in masks. (1 = in step: the rotation gain times this is the measured torque path.)
+## Returns {re: [roll, pitch], im: [roll, pitch], w: mean free-run rotor speed per motor there [rad/s]}, {} without runs.
+static func torque_path(rows: Array, sims: Array, logs: Array, masks: Array, freqs: Array = TP_FREQS, cancel: Callable = Callable()) -> Dictionary:
+	var fs := _fs(rows)
+	var Bs := [_frf_new(fs, freqs), _frf_new(fs, freqs)]
+	var ws := Num.zeros(4)
+	var nw := 0
+	for ri in rows.size():
+		var sim: Array = sims[ri]
+		var gu: Array = (logs[ri] as Flight).gyro_unfilt
+		var rr := Num.runs(Num.mask_and(rows[ri].ok, masks[ri]))
 		for j in range(0, rr.size(), 2):
 			var a := rr[j]
 			var b := rr[j + 1]
@@ -637,58 +736,78 @@ static func response_gain(rows: Array, sims: Array, freqs: Array = [5, 10, 20, 3
 				continue
 			if cancel.is_valid() and cancel.call():
 				return {}
+			var W2: Array = []
+			for m in 4:
+				var c := PackedFloat64Array()
+				c.resize(b - a)
+				for i in b - a:
+					var v: float = sim[m][a + i]
+					c[i] = v * v
+					ws[m] += v
+				W2.append(c)
+			nw += b - a
 			for axis in 2:
-				var nn := b - a
-				xs.resize(nn)
-				xm.resize(nn)
-				for i in nn:
-					var q := a + i
-					if axis == 0:
-						xm[i] = r.w[2][q] + r.w[3][q] - r.w[0][q] - r.w[1][q]
-						xs[i] = sim[2][q] + sim[3][q] - sim[0][q] - sim[1][q]
-					else:
-						xm[i] = r.w[0][q] + r.w[2][q] - r.w[1][q] - r.w[3][q]
-						xs[i] = sim[0][q] + sim[2][q] - sim[1][q] - sim[3][q]
-				var step := nper / 2
-				var nseg := (nn - step) / step
-				var sxy_re := Num.zeros(nb)
-				var sxy_im := Num.zeros(nb)
-				var sxx := Num.zeros(nb)
-				for sg in nseg:
-					var o := sg * step
-					var ms := Num.psum(xs, o, nper) / nper
-					var mm := Num.psum(xm, o, nper) / nper
-					for bi in nb:
-						var c: PackedFloat64Array = cosv[bi]
-						var s: PackedFloat64Array = sinv[bi]
-						var sr := 0.0
-						var si := 0.0
-						var mr := 0.0
-						var mi := 0.0
-						for k in nper:
-							var vs := (xs[o + k] - ms) * win[k]
-							var vm := (xm[o + k] - mm) * win[k]
-							sr += vs * c[k]
-							si += vs * s[k]
-							mr += vm * c[k]
-							mi += vm * s[k]
-						# conj(Xs) * Xm
-						sxy_re[bi] += sr * mr + si * mi
-						sxy_im[bi] += sr * mi - si * mr
-						sxx[bi] += sr * sr + si * si
-				if nseg > 0:
-					for bi in nb:
-						acc_xy_re[bi] += sxy_re[bi] / nseg
-						acc_xy_im[bi] += sxy_im[bi] / nseg
-						acc_xx[bi] += sxx[bi] / nseg
-	var out := {}
-	for bi in nb:
-		var f: int = freqs[bi]
-		if acc_xx[bi] != 0.0:
-			out[f] = Num.pyround(sqrt(acc_xy_re[bi] * acc_xy_re[bi] + acc_xy_im[bi] * acc_xy_im[bi]) / acc_xx[bi], 2)
-		else:
-			out[f] = null
-	return out
+				var x := PackedFloat64Array()
+				x.resize(b - a)
+				var g := PackedFloat64Array()
+				g.resize(b - a)
+				for i in b - a:
+					x[i] = _diff(W2, i, axis)
+					g[i] = deg_to_rad(gu[axis][a + i])
+				_frf_add(Bs[axis], x, Num.gradient(g, 1.0 / fs))
+	if nw == 0:
+		return {}
+	for m in 4:
+		ws[m] /= nw
+	var H0 := _frf_ratio(Bs[0])
+	var H1 := _frf_ratio(Bs[1])
+	return {"re": [H0[0], H1[0]], "im": [H0[1], H1[1]], "w": ws}
+
+
+## Speed factor lam and extra dead time d that put the free run in step with the gyro (R: torque_path() of a free run whose
+## time constant at the chirps' rotor speed is tau0). Scaling a, b, c by lam makes the time constant tau0 / lam (the steady
+## state stays) and R becomes R (1 + j w tau0 / lam) / (1 + j w tau0) e^(j w d): lam makes its magnitude flat over freqs
+## (golden section on the variance of ln|R| over TP_LAMBDA, both axes), d its phase zero (least squares through 0).
+## Returns [lam, d [s]].
+static func torque_refine(R: Dictionary, tau0: float, freqs: Array = TP_FREQS) -> Array:
+	var nf := freqs.size()
+	var w := PackedFloat64Array()
+	for f in freqs:
+		w.append(TAU * float(f))
+	var lnr: Array = []
+	for ax in 2:
+		var c := PackedFloat64Array()
+		for i in nf:
+			var re: float = R.re[ax][i]
+			var im: float = R.im[ax][i]
+			c.append(log(sqrt(re * re + im * im)) - log(sqrt(1.0 + w[i] * tau0 * w[i] * tau0)))
+		lnr.append(c)
+	var cost := func(lam: float) -> float:
+		var tot := 0.0
+		for ax in 2:
+			var z := PackedFloat64Array()
+			for i in nf:
+				var x := w[i] * tau0 / lam
+				z.append(lnr[ax][i] + log(sqrt(1.0 + x * x)))
+			tot += Num.variance(z)
+		return tot
+	var lam := golden(cost, TP_LAMBDA_LO, TP_LAMBDA_HI, 12)
+	var num := 0.0
+	var den := 0.0
+	for ax in 2:
+		for i in nf:
+			var psi := atan2(R.im[ax][i], R.re[ax][i]) - atan(w[i] * tau0) + atan(w[i] * tau0 / lam)
+			num += w[i] * psi
+			den += w[i] * w[i]
+	return [lam, -num / den]
+
+
+## Small-signal time constant [s] per motor at rotor speed w[m].
+static func time_constant(P: Array, w: PackedFloat64Array, kv_rad: float) -> PackedFloat64Array:
+	var o := PackedFloat64Array()
+	for m in 4:
+		o.append(1.0 / (P[m][0] / kv_rad + 2.0 * P[m][1] * w[m]))
+	return o
 
 
 ## Rotor speed [rad/s] per motor in steady state for command u at voltage V.

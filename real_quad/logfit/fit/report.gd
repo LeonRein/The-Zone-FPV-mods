@@ -135,7 +135,7 @@ static func _col(P: Array, k: int) -> Array:
 	return P.map(func(p): return p[k])
 
 
-func motor(P0: Array, P: Array, lam: float, r0: float, r1: float, r2: float, V: Dictionary, gain: Dictionary, fr: Dictionary) -> void:
+func motor(P0: Array, P: Array, lam: float, r0: float, r1: float, r2: float, V: Dictionary, gain: Dictionary, fr: Dictionary, tp: Variant = null) -> void:
 	var vs: Variant = V.get("vbat_scale")
 	var gl: Array = []
 	for k in gain:
@@ -143,14 +143,17 @@ func motor(P0: Array, P: Array, lam: float, r0: float, r1: float, r2: float, V: 
 	var frl: Array = []
 	for k in fr:
 		frl.append("%s %s" % [k, ("%.1f" % (fr[k]))])
-	var lines := ["Model per motor: dω/dt = a·(u·V − ω/Kv) − b·ω² − c, 1 ms dead time.",
+	var lines := ["Model per motor: dω/dt = a·(u·V − ω/Kv) − b·ω² − c, %.1f ms dead time." % ((tp.delay_s if tp != null else 0.001) * 1e3),
 		"- Equation-error fit (R² %s): a %s, b %s, c %s" % [f(r2, 3), f(_col(P0, 0), 4), f(_col(P0, 1), 4), f(_col(P0, 2), 3)],
-		"- Dynamics refinement λ = %s (a, b, c scaled together, steady state unchanged): free run %s → %s Hz RMS" % [f(lam, 3), f(r0, 3), f(r1, 3)],
-		"- Final: a %s, b %s, c %s" % [f(_col(P, 0), 4), f(_col(P, 1), 4), f(_col(P, 2), 3)],
-		"- Response measured/simulated (roll+pitch differential) at " + ", ".join(gl),
+		"- Dynamics refinement λ = %s (a, b, c scaled together, steady state unchanged): free run %s → %s Hz RMS" % [f(lam, 3), f(r0, 3), f(r1, 3)]]
+	if tp != null:
+		lines.append("- Torque path (chirps: the free run's ω² against the gyro, 5–50 Hz): a, b, c × %s, dead time 1.0 → %.1f ms; time constant at the chirps %s → %s ms (the eRPM telemetry lags the rotors: the eRPM sets the steady state, the gyro the speed)" % [
+			f(tp.lambda, 3), tp.delay_s * 1e3, f(tp.tau0_s * 1e3, 3), f(tp.tau0_s / tp.lambda * 1e3, 3)])
+	lines.append_array(["- Final: a %s, b %s, c %s" % [f(_col(P, 0), 4), f(_col(P, 1), 4), f(_col(P, 2), 3)],
+		"- Response measured/simulated (roll+pitch differential, eRPM fit) at " + ", ".join(gl),
 		"- Voltage: " + ("vbat × " + f(vs, 4) if vs != null else "fitted per 2-s window (no vbat in the log)"),
-		"- Free run per session [Hz RMS]: " + ", ".join(frl)]
-	meas("Motor/ESC a, b, c (per motor)", "see Motor/ESC", "eRPM vs. DShot command")
+		"- Free run per session (eRPM fit) [Hz RMS]: " + ", ".join(frl)])
+	meas("Motor/ESC a, b, c (per motor)", "see Motor/ESC", "eRPM vs. DShot command" + (", speed and dead time from the gyro" if tp != null else ""))
 	var g: Array = []
 	for k in gain:
 		if 5 <= int(k) and int(k) <= 30 and gain[k] != null and float(gain[k]) != 0.0:
@@ -203,7 +206,7 @@ func hover(h: Dictionary, steady: Dictionary) -> void:
 	sec("Hover and thrust", lines)
 
 
-func rotation(fit: Dictionary, rp: Dictionary, kQ: float, yaw_rev: bool, chirp: bool, chirp_s: float, band: Array) -> void:
+func rotation(fit: Dictionary, rp: Dictionary, kQ: float, yaw_rev: bool, chirp: bool, chirp_s: float, band: Array, tq: Variant = null) -> void:
 	var lines := ["Instrumental-variable fit on %s (%d s of chirp in the logs), band %s–%s Hz." % [
 		"chirps" if chirp else "freestyle (no or too little chirp)", roundi(chirp_s), fmt_g(band[0], 6), fmt_g(band[1], 6)],
 		"| Axis | Gain | Damping | R² | Rel. std. error (jackknife over windows) |", "|---|---|---|---|---|"]
@@ -223,6 +226,26 @@ func rotation(fit: Dictionary, rp: Dictionary, kQ: float, yaw_rev: bool, chirp: 
 	var yse: float = fit.yaw.se if fit.yaw.se != null else 1.0
 	gate("rotation_yaw", "Rotation yaw", fit.yaw.r2 >= 0.5 and yse <= 0.25,
 		"R² %s, rel. std. error %s %% (threshold 25 %%)" % [f(fit.yaw.r2, 2), f((fit.yaw.se if fit.yaw.se != null else 0.0) * 100.0, 2)])
+	if tq != null:
+		const Motor := preload("motor.gd")
+		var parts: Array = []
+		var rng: Array = []
+		var ok := true
+		for ax in 2:
+			var vals: Array = []
+			var lo := INF
+			var hi := -INF
+			for i in Motor.TP_FREQS.size():
+				if Motor.TP_FREQS[i] >= 10:
+					var v: float = tq[ax][i]
+					vals.append("%.2f" % v)
+					lo = minf(lo, v)
+					hi = maxf(hi, v)
+					ok = ok and 0.85 <= v and v <= 1.15
+			parts.append(["roll", "pitch"][ax] + " " + ", ".join(vals))
+			rng.append("%s %.2f–%.2f" % [["roll", "pitch"][ax], lo, hi])
+		lines.append("Torque path measured/sim (gain × free run vs. gyro, 10–50 Hz): " + "; ".join(parts))
+		gate("torque_path", "Torque path 10–50 Hz", ok, "measured/sim %s (0.85–1.15)" % ", ".join(rng))
 	if not chirp:
 		default("Rate damping", "0", "not identifiable without chirp")
 	sec("Rotational dynamics", lines)
@@ -341,8 +364,8 @@ func validation(h: Dictionary, s: Variant, ev: Array) -> void:
 			el.append("%s %s s %s %s/%s" % [e.log, str(e.t), str(e.plateau), _ms(e.t90_log), _ms(e.t90_sim)])
 		lines.append("Events (session, time, plateau deg/s, t90 log/sim ms): " + "; ".join(el))
 		gate("roll_t90", "Roll t90 sim vs. log", absf(s.sim_ms - s.log_ms) <= maxf(0.2 * s.log_ms, 10.0), "%s vs. %s ms (±20 %%)" % [str(s.sim_ms), str(s.log_ms)])
-		gate("roll_lag", "Roll lag sim vs. log", absf(s.lag_sim_ms - s.lag_log_ms) <= maxf(0.25 * absf(s.lag_log_ms), 3.0),
-			"%s vs. %s ms (±25 %%, at least 3 ms)" % [str(s.lag_sim_ms), str(s.lag_log_ms)])
+		gate("roll_lag", "Roll lag sim vs. log", absf(s.lag_sim_ms - s.lag_log_ms) <= maxf(0.25 * absf(s.lag_log_ms), 2.0),
+			"%s vs. %s ms (±25 %%, at least 2 ms)" % [str(s.lag_sim_ms), str(s.lag_log_ms)])
 		gate("tracking", "Closed-loop tracking", s.track <= 0.35, "%s (threshold 0.35)" % ("%.2f" % (s.track)))
 	else:
 		warn("roll_t90", "Roll t90 sim vs. log", "no fast roll steps (≥ 300 deg/s) found: no closed-loop check")

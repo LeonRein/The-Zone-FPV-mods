@@ -5,7 +5,7 @@ extends RefCounted
 const Num := preload("num.gd")
 const Classes := preload("classes.gd")
 
-const CRITICAL := ["motor_free_run", "motor_dynamics", "hover_detection", "rotation_roll_pitch", "hover_throttle", "roll_t90"]
+const CRITICAL := ["motor_free_run", "motor_dynamics", "hover_detection", "rotation_roll_pitch", "torque_path", "hover_throttle", "roll_t90"]
 const MEANING := {"A": "flies like your quad", "B": "close; small differences", "C": "rough: right size and power, response approximate",
 	"D": "a sketch: mostly class defaults"}
 const ORDER := "ABCD"

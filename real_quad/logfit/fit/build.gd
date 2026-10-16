@@ -4,7 +4,7 @@ extends RefCounted
 ##                              content, skip rules, consistency, form defaults (class), sensor sanity
 ##   1 segment                  usable airborne windows, chirp windows; minimum airborne time
 ##   2 fc_config                Betaflight settings from the newest session's header
-##   3 motor                    motor/ESC model per motor, dynamics refinement
+##   3 motor                    motor/ESC model per motor, dynamics refinement (eRPM), speed and dead time from the gyro (chirps)
 ##   4 hover / kT               thrust coefficient from hover with the craft mass
 ##   5 rotation                 inertia, rotor inertia, yaw direction, rate damping (IV, chirps)
 ##   6 bias                     torque imbalance per thrust
@@ -503,9 +503,35 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 	var gain := Motor.response_gain(rows, sims, [5, 10, 20, 30], _cancelled)
 	if cancel_flag:
 		return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
-	rep.motor(P0, P, lam, rd[1], rd[2], r2, V, gain, frh)
+	var chirp_masks: Array = []
+	var chirp_s := 0.0
+	for k in LL.size():
+		var wins: Array = segs[k].chirps.map(func(ch): return [ch[0], ch[0] + ch[1]])
+		var m := Segments.mask_from_windows(LL[k].t, wins)
+		chirp_masks.append(m)
+		chirp_s += float(m.count(1)) / LL[k].fs
+	var use_chirp := chirp_s >= MIN_CHIRP_S
+	var delay := Motor.DELAY_S
+	var torque: Variant = null
+	var R := Motor.torque_path(rows, sims, LL, chirp_masks, Motor.TP_FREQS, _cancelled) if use_chirp else {}
+	if cancel_flag:
+		return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
+	if not R.is_empty() and not (R.re + R.im).any(func(c): return Array(c).any(func(v): return is_nan(v))):
+		# the speed and dead time from the gyro (the eRPM lags), the steady state stays
+		var tau0 := Num.mean(Motor.time_constant(P, R.w, kv_rad))
+		var tr := Motor.torque_refine(R, tau0)
+		delay = Num.pyround(clampf(Motor.DELAY_S + tr[1], 0.0, Motor.DELAY_MAX_S), 4)
+		P = Motor.scaled(P, tr[0])
+		sims = Num.parallel_for(rows.size(), func(k: int) -> Array:
+			var r: Dictionary = rows[k].duplicate()
+			r.u = (LL[k] as Flight).u().map(func(c): return Motor.delayed(c, delay, LL[k].fs))
+			return Motor.simulate(r, P, V, kv_rad, PackedFloat64Array(), 4, _cancelled))
+		if cancel_flag:
+			return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
+		torque = {"lambda": tr[0], "delay_s": delay, "tau0_s": tau0, "R": [R.re, R.im], "w": R.w}
+	rep.motor(P0, P, lam, rd[1], rd[2], r2, V, gain, frh, torque)
 	steps["03_motor"] = {"P0": P0, "V": V, "r2": r2, "lambda": lam, "rms_before": rd[1], "rms_after": rd[2], "P": P, "free_run_hz": frh,
-		"gain": gain, "motor_s": motor_s}
+		"gain": gain, "torque": torque, "motor_s": motor_s}
 	if cancel_flag:
 		return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
 
@@ -530,14 +556,6 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 
 	# 5 rotation
 	_say("Rotation", 0.64)
-	var chirp_masks: Array = []
-	var chirp_s := 0.0
-	for k in LL.size():
-		var wins: Array = segs[k].chirps.map(func(ch): return [ch[0], ch[0] + ch[1]])
-		var m := Segments.mask_from_windows(LL[k].t, wins)
-		chirp_masks.append(m)
-		chirp_s += float(m.count(1)) / LL[k].fs
-	var use_chirp := chirp_s >= MIN_CHIRP_S
 	var band: Array = Rotation.BAND
 	var bcol := PackedFloat64Array()
 	for m in 4:
@@ -574,10 +592,23 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 	var s0 := 1.0 if yaw_rev else -1.0
 	var kQ: float = rp.J_rotor * ((((bcol[0] + bcol[1]) + bcol[2]) + bcol[3]) / 4.0)
 	cfg.yaw_motors_reversed = yaw_rev
-	rep.rotation(fit, rp, kQ, yaw_rev, use_chirp, chirp_s, band)
+	# the finished torque path against the gyro: measured / sim
+	var tq: Variant = null
+	if torque != null:
+		var Rf := Motor.torque_path(rows, sims, LL, chirp_masks, Motor.TP_FREQS, _cancelled)
+		if cancel_flag or Rf.is_empty():
+			return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
+		tq = []
+		for ax in 2:
+			var k: float = fit[Rotation.AX[ax]].coef[0] * 1e-6
+			var r := PackedFloat64Array()
+			for i in Motor.TP_FREQS.size():
+				r.append(sqrt(Rf.re[ax][i] * Rf.re[ax][i] + Rf.im[ax][i] * Rf.im[ax][i]) / k)
+			tq.append(r)
+	rep.rotation(fit, rp, kQ, yaw_rev, use_chirp, chirp_s, band, tq)
 	rep.default("Izz", "%s kg·m²" % Report.fmt_g(rp.Izz, 3), "1.7 × mean roll/pitch inertia (only J_rotor/Izz is measured)")
 	steps["05_rotation"] = {"chirp_s": chirp_s, "use_chirp": use_chirp, "band": band, "n_rows": fa[1], "n_rows_yaw": fa[2], "yaw_source": yaw_src,
-		"fit": fit, "params": rp, "yaw_reversed": yaw_rev, "yaw_ok": yaw_ok, "yaw_reversed_default": rev_default, "kQ": kQ}
+		"fit": fit, "params": rp, "yaw_reversed": yaw_rev, "yaw_ok": yaw_ok, "yaw_reversed_default": rev_default, "kQ": kQ, "torque_ratio": tq}
 
 	# 6 bias
 	_say("Trim", 0.7)
@@ -606,7 +637,7 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 	var p := {
 		"mass": mass, "kv_rad": kv_rad,
 		"motor_a": P.map(func(x): return Num.pyround(x[0], 1)), "motor_b": P.map(func(x): return _sig(x[1], 5)),
-		"motor_c": P.map(func(x): return Num.pyround(x[2], 1)), "motor_delay_s": Motor.DELAY_S,
+		"motor_c": P.map(func(x): return Num.pyround(x[2], 1)), "motor_delay_s": delay,
 		"kT": _sig(kT, 4), "arm": Num.pyround(geo.arm, 4),
 		"Ixx": _sig(rp.Ixx, 4), "Iyy": _sig(rp.Iyy, 4), "Izz": _sig(rp.Izz, 4),
 		"kQ": _sig(kQ, 4), "J_rotor": _sig(rp.J_rotor, 4),
@@ -863,7 +894,7 @@ static func _sig(x: float, n: int) -> float:
 static func _param_sources(rd_ok: bool, body_src: String, yaw_ok: bool, chirp: bool, b: Variant, bat: Dictionary, geo: Dictionary, form: Dictionary) -> Dictionary:
 	var bm := "M" if bat.source != "default" else "C"
 	return {"mass": "U", "kv_rad": "U" if form.get("kv") == "U" else "M", "motor_a": "M", "motor_b": "M", "motor_c": "M",
-		"motor_delay_s": "K", "kT": "M", "arm": "C" if geo.arm_assumed else "U", "Ixx": "D", "Iyy": "D", "Izz": "C",
+		"motor_delay_s": "M" if chirp else "K", "kT": "M", "arm": "C" if geo.arm_assumed else "U", "Ixx": "D", "Iyy": "D", "Izz": "C",
 		"J_rotor": "M" if yaw_ok else "C", "kQ": "D", "yaw_spin": "M" if yaw_ok else "C", "rate_damping": "M" if chirp else "C",
 		"pitch_m_per_rad": "C" if geo.pitch_assumed else "U", "prop_radius": "U" if form.get("prop.diameter_in") == "U" else "C",
 		"cd_area": {"acc": "M", "top_speed": "D", "default": "C"}[body_src], "rotor_drag": "M" if rd_ok else "C",
