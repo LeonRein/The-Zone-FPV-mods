@@ -1486,6 +1486,9 @@ func _fill_actions() -> void:
 		row2.add_child(_btn("Delete", " Delete ", func():
 			_confirming_delete = true
 			_fill_actions(), "Deletes the model and its logs"))
+	if str(d.grade) in ["A", "B"]:
+		row2.add_child(_btn("Tune", " Tuned twin ", tune_model,
+			"Tunes the Betaflight settings in the simulator (a few minutes) and adds the result as a model of yours: how this quad would probably fly when well tuned. Not a tune for the real quad."))
 	row2.add_child(_btn("OpenFolder", " Open folder ", open_folder))
 	_d_actions.add_child(row2)
 	if _confirming_delete:
@@ -1551,6 +1554,15 @@ func duplicate_model() -> void:
 		_use_note.add_theme_color_override("font_color", BAD)
 		return
 	show_detail(str(r.id))
+
+
+func tune_model() -> void:
+	var err: String = mm.autotune(detail_id)
+	if err != "":
+		_use_note.text = err
+		_use_note.add_theme_color_override("font_color", BAD)
+		return
+	_go("overview")
 
 
 func delete_model() -> void:

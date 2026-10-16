@@ -162,6 +162,20 @@ MODELS... (THE MODEL MANAGER)
   class values, and what to fly). A model calibrated with another version
   of dirty_air than the one installed offers "Recalibrate prop wash",
   which runs only that step.
+  Tuned twin (models of grade A or B): how would my quad probably fly when
+  well tuned? A background job flies the model in the simulator - your
+  own sticks from its logs, stick steps at idle, hover and full throttle,
+  flips, a drop and catch through dirty_air's air - and searches its
+  Betaflight settings (P, I, D, D-max, feedforward per axis, then TPA,
+  dynamic idle, anti-gravity, thrust linear) for the smallest tracking
+  error, within bounds for its class (D at most 1.5 x Betaflight's default
+  D-max with the RPM filter: the sim has no gyro noise or motor heat) and
+  without more motor saturation or more ringing than the flown tune on a
+  plant with less inertia and more motor delay. The filters stay as flown.
+  The result is a new model of yours, "<name> (tuned)": the same plant,
+  the tuned settings, and a report (flown and tuned per setting, what
+  limited it, the predicted changes, what is not modelled). It is for the
+  simulator only, not a tune to copy to the real quad. A few minutes.
 
 
 WITH THE OTHER MODS
