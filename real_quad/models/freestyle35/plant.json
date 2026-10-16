@@ -64,7 +64,7 @@
   "wake_decel": 1.5,
   "wake_cap": 1.0,
   "wake_gain": 0.35,
-  "turb_base_ms": 0.204,
+  "turb_base_ms": 0.199,
   "pw_turb_ms": 3.76,
   "pw_noise_hz": 25.0,
   "vrs_center": 1.0,
@@ -74,27 +74,27 @@
   "_comment": "3.5\" freestyle, 300 g, 4S: plant identified by fpvident 1.0.0 from 9 blackbox log sessions (LOG00001#1, LOG00002#1, LOG00003#1, mini_03_freestyle#1, mini_04_freestyle_chirp5#1, mini_05_crash#1, mini_08_freestyle#1, mini_09_freestyle#1, mini_10_freestyle#1); see report.md. Body frame FLU = Betaflight gyro frame; motor order RR, FR, RL, FL.",
   "dirty_air_wash": 1.0,
   "dirty_air_wake": 1.0,
-  "dirty_air_gust": 5.04,
+  "dirty_air_gust": 4.92,
   "dirty_air_calibration": {
     "state": "calibrated",
     "why": "",
     "dirty_air_version": "1.1",
     "targets": {
-      "dropcatch": 14.78,
-      "calm": 0.79
+      "calm": 0.79,
+      "dropcatch": 14.78
     },
     "scenario": {
-      "dropcatch": 14.8,
-      "calm": 0.79
+      "calm": 0.79,
+      "dropcatch": 14.9
     },
-    "gust": 5.04,
-    "turb_base_ms": 0.204,
+    "gust": 4.92,
+    "turb_base_ms": 0.199,
     "seeds": 32,
-    "runs": 2,
+    "runs": 4,
     "calibrated": [
       "calm",
       "dropcatch"
     ],
-    "runtime_s": 6.7
+    "runtime_s": 14.9
   }
 }

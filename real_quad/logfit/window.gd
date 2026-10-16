@@ -30,11 +30,13 @@ const BAD := Color(1.0, 0.45, 0.4)
 const GROUP := Color(0.75, 0.85, 1.0)
 const _MM := preload("model_manager.gd")
 const LOGFIT := "res://real_quad/logfit/logfit.gd"
+const BUILD := "res://real_quad/logfit/fit/build.gd"
 const CFG := "user://real_quad/logfit.cfg"
 const EXTS := ["bbl", "bfl", "txt"]
 const TYPING := "zm_typing"
 const CONFIRM_TEXT := "All logs were flown with the same weight, props and battery"
 const INPUTS_UNKNOWN := "Inputs unknown - add logs to rebuild"
+const STALE_HINT := "Built with another dirty_air version - rebuild to update."
 
 # contract 4.2: weight band (g), cells, default prop D / pitch / blades, pack mAh, ducted, Zone drone
 const CLASSES := {
@@ -84,6 +86,7 @@ var detail_id := ""
 var detail := {}                      # manager.details(detail_id)
 var pend_add := PackedStringArray()   # logs to add to the model in the detail page
 var skipped := PackedStringArray()    # picked files that are not blackbox logs (left out, named once)
+var unreadable := PackedStringArray()  # picked files that cannot be read (the error texts, named once)
 var pend_rm := {}                     # stored log name -> true: to remove
 
 var _logfit = null
@@ -784,18 +787,35 @@ func _remember_dir(picked: PackedStringArray) -> void:
 	c.save(cfg_path)
 
 
-## True for a Betaflight blackbox log: its first header line is in the first kilobytes (a .txt
-## next to the logs may be a CLI dump or notes, which is left out instead of failing the build)
-static func is_blackbox_log(path: String) -> bool:
+## "log" for a Betaflight blackbox log (its first header line is in the first kilobytes: a .txt next to the
+## logs may be a CLI dump or notes, which is left out instead of failing the build), "other" for a readable
+## file that is none, else the text of the error for a file that cannot be read (permissions, macOS privacy).
+static func log_kind(path: String) -> String:
 	var f := FileAccess.open(path, FileAccess.READ)
 	if f == null:
-		return false
+		var B = load(BUILD)
+		return B.unreadable_issue(path.get_file(), B.open_why(path)).message
 	var head := f.get_buffer(mini(f.get_length(), 16384)).get_string_from_ascii()
-	return head.contains("H Product:Blackbox flight data recorder")
+	return "log" if head.contains("H Product:Blackbox flight data recorder") else "other"
+
+
+## Sorts a picked file after log_kind(): into the logs it is (true) or into skipped / unreadable (false).
+func _is_log(p: String) -> bool:
+	var k := log_kind(p)
+	if k == "other":
+		skipped.append(p.get_file())
+	elif k != "log":
+		unreadable.append(k)
+	return k == "log"
 
 
 func _skipped_note() -> Control:
-	return _label("Not blackbox logs, left out: %s" % ", ".join(skipped), 1.0, WARN)
+	var box := VBoxContainer.new()
+	if not skipped.is_empty():
+		box.add_child(_label("Not blackbox logs, left out: %s" % ", ".join(skipped), 1.0, WARN))
+	for u in unreadable:
+		box.add_child(_label(u, 1.0, BAD))
+	return box
 
 
 ## A log's name in a list: its file name, with its folder when another file in the list has the
@@ -815,10 +835,10 @@ static func same_file(a: String, b: String) -> bool:
 func add_files(picked: PackedStringArray) -> void:
 	var added := false
 	skipped = PackedStringArray()
+	unreadable = PackedStringArray()
 	for p in picked:
 		if p.get_extension().to_lower() in EXTS and not p in paths:
-			if not is_blackbox_log(p):
-				skipped.append(p.get_file())
+			if not _is_log(p):
 				continue
 			paths.append(p)
 			added = true
@@ -1053,7 +1073,7 @@ func _refresh() -> void:
 		_fill_drones()
 	_clear(_files_box)
 	_clear(_msgs)
-	if not skipped.is_empty():
+	if not skipped.is_empty() or not unreadable.is_empty():
 		_msgs.add_child(_skipped_note())
 	if not available():
 		_msgs.add_child(_label("The model builder is not installed completely: real_quad/logfit/logfit.gd is missing. Update the mod.", 1.0, BAD))
@@ -1593,7 +1613,7 @@ func _fill_logs() -> void:
 		return
 	var stored: Array = (d.logs as Array).filter(func(l): return bool(l.stored))
 	_d_logs.add_child(_note("The logs are kept in the model's folder (logs/), so it can be rebuilt without the originals. Add or remove logs, then rebuild. Identical files are kept once."))
-	if not skipped.is_empty():
+	if not skipped.is_empty() or not unreadable.is_empty():
 		_d_logs.add_child(_skipped_note())
 	if not bool(d.inputs_known) or (stored.is_empty() and not (d.logs as Array).is_empty()):
 		var names := ", ".join(PackedStringArray((d.logs as Array).map(func(l): return str(l.name))))
@@ -1656,10 +1676,10 @@ func drop_added(p: String) -> void:
 ## Logs to add to the model in the detail page
 func add_detail_logs(picked: PackedStringArray) -> void:
 	skipped = PackedStringArray()
+	unreadable = PackedStringArray()
 	for p in picked:
 		if p.get_extension().to_lower() in EXTS and not p in pend_add:
-			if not is_blackbox_log(p):
-				skipped.append(p.get_file())
+			if not _is_log(p):
 				continue
 			pend_add.append(p)
 	_remember_dir(picked)
@@ -1747,8 +1767,11 @@ func _update_detail_buttons(v: Dictionary) -> void:
 	if reb_why == "" and busy_t != "":
 		reb_why = busy_t
 	reb.disabled = reb_why != ""
+	var idle := "Rebuild runs the fit again on the stored logs."
+	if str(detail.get("propwash", {}).get("stale", "")) != "" and str(detail.get("origin", "")) == "user":
+		idle = STALE_HINT
 	_d_hint.text = reb_why if reb_why != "" else ("Changes: the parameters or logs changed - rebuild to use them." if bool(st.rebuild) else
-		("The name or the drone changed: save it, no rebuild needed." if bool(st.meta) else "Rebuild runs the fit again on the stored logs."))
+		("The name or the drone changed: save it, no rebuild needed." if bool(st.meta) else idle))
 
 
 ## Builds the model again from its logs and the parameters in the form

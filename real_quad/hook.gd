@@ -48,7 +48,7 @@ var _gs = null                      # the game's ZGamestate autoload
 var _zs = null                      # the game's ZSettings autoload (RATES)
 var focus_override := 0             # tests: 1 = the game's window has focus, -1 = it has not, 0 = ask the window
 var _rates_mode := "game"           # the drone's rates setting
-var _rates_key = []                 # the game's rates last handed to the model
+var _rates_key := []                # the game's rates (type, roll, pitch, yaw) last handed to the model
 var _drag_key := Vector3(-1, -1, -1)   # the game's drag multipliers last handed to the model (-1: none yet)
 var _orig_body := {}                # body properties restored when switching back to the game's physics (BODY_PROPERTIES)
 var _gen := -1                      # mod.generation the model was last given its settings for
@@ -67,29 +67,24 @@ var _bat_n: Node = null
 var _bat_ok := false                # battery_sag's Battery has drive()
 var _handler: Node = null           # the race handler
 var _handler_api := false           # ... and it has an api
-var _rates_type = null              # the game's rates last handed to the model (type, roll, pitch, yaw), as _rates_key was
-var _rates_roll = null
-var _rates_pitch = null
-var _rates_yaw = null
+var _kept: RefCounted = null        # the model put aside for a pause or a turtle flip (its rotors and controller go on after)
 var _spin := [0.0, 0.0, 0.0, 0.0]   # the rotors' spin handed to prop_damage
 
 
-static func find_mod(tree: SceneTree) -> Node:
-	return tree.root.get_node_or_null("ZoneMods/real_quad") if tree != null else null
-
-
-func _init(p_host: RigidBody3D, p_mod: Node) -> void:
+## (Without the mod node, mod stays null and the hook does nothing: the game's own quad.)
+func _init(p_host: RigidBody3D) -> void:
 	host = p_host
-	mod = p_mod
 
 
 func ready() -> void:
+	mod = host.get_tree().root.get_node_or_null("ZoneMods/real_quad")
 	_gs = host.get_node_or_null("/root/ZGamestate")
 	_zs = host.get_node_or_null("/root/ZSettings")
 	if host.has_signal("teleported"):
 		host.connect("teleported", func() -> void:
-			if model != null:
-				model.reset()
+			var m = model if model != null else _kept
+			if m != null:
+				m.reset()
 				# a respawn gives a fresh pack only while disarmed (battery_sag's new_pack_on_respawn default);
 				# battery_sag has its own rules for its pack
 				if not bool(host.call("is_armed")):
@@ -98,10 +93,12 @@ func ready() -> void:
 
 ## Before the game's physics step
 func before_physics() -> void:
-	_guard_race_upload()
+	if mod == null:
+		return
 	var vid := _vehicle_id()
 	var want := _wanted_model_id(vid)
 	_set_model(want, _put_aside())
+	_guard_race_upload()
 	if model != null and (mod.generation != _gen or vid != _vid):
 		_apply_settings(vid)
 		_gen = mod.generation
@@ -151,13 +148,13 @@ func _vehicle_id() -> String:
 
 ## The model package that should fly the drone right now, "" = the game's physics.
 func _wanted_model_id(vid: String) -> String:
-	if not mod.on or _gs == null or _put_aside():
+	if not mod.on or _gs == null or _put_aside() or host.get("physics_handler") != null:    # (another handler: the wing)
 		return ""
 	return mod.model_id_for(vid)
 
 
 ## The game's physics fly for a moment (the game is paused, the quad is on its back in turtle mode): the
-## same model goes on after, with the same pack
+## same model goes on after, with the same pack, rotor speeds and controller
 func _put_aside() -> bool:
 	return _gs != null and (_gs.is_paused or host.get("turtle_mode_active") == true)
 
@@ -180,7 +177,11 @@ func _set_model(id: String, aside := false) -> void:
 			_orig_body[key] = host.get(key)
 	model = m
 	_gen = -1
-	model.reset()                  # resyncs from the body's current velocities
+	if m == _kept:
+		m.resync()                 # put aside for a moment: the rotors and the controller go on, the velocities are the body's
+	else:
+		m.reset()                  # from rest, resynced from the body's current velocities
+	_kept = null
 	model.configure_body(host)     # custom integrator, mass/inertia of the modelled quad
 	active = true
 	mod.flying(_vehicle_id(), model)
@@ -188,6 +189,7 @@ func _set_model(id: String, aside := false) -> void:
 
 func _deactivate(aside := false) -> void:
 	active = false
+	_kept = model if aside else null
 	model = null
 	_release_battery()
 	if not aside:
@@ -230,16 +232,9 @@ func _apply_game_settings() -> void:
 	if _rates_mode == "game" and _zs != null:
 		var r = _zs.get("RATES")
 		if r is Dictionary:
-			var t = r.get("type")
-			var ro = r.get("roll")
-			var pi = r.get("pitch")
-			var ya = r.get("yaw")
-			if _rates_key.is_empty() or t != _rates_type or ro != _rates_roll or pi != _rates_pitch or ya != _rates_yaw:
-				_rates_key = [t]       # (non-empty: handed over once)
-				_rates_type = t
-				_rates_roll = ro
-				_rates_pitch = pi
-				_rates_yaw = ya
+			var key := [r.get("type"), r.get("roll"), r.get("pitch"), r.get("yaw")]
+			if key != _rates_key:
+				_rates_key = key
 				model.set_game_rates(r)
 
 
@@ -344,9 +339,10 @@ func _release_battery() -> void:
 		bat.call("external_release")
 
 
-## This mod flies different physics, so race times must never be posted. The race handler's API
-## object is replaced by a variant whose post_race_run() is a no-op (checked every tick because
-## the game recreates the handler's state on map changes; the check itself is a type test).
+## A model flies different physics, so race times must never be posted while it does (or is put aside for a
+## pause or a turtle flip). The race handler's API object is then replaced by a variant whose post_race_run()
+## is a no-op, and put back when the game's own physics fly (checked every tick because the game recreates the
+## handler's state on map changes; the check itself is a type test).
 func _guard_race_upload() -> void:
 	if not mod.on:
 		return
@@ -357,9 +353,15 @@ func _guard_race_upload() -> void:
 	if not _handler_api:
 		return
 	var api = handler.get("api")
+	if not (active or _kept != null):
+		if api is ApiGuard and is_instance_valid(api.original):
+			handler.api = api.original
+			print("[real_quad] race uploads as the game's")
+		return
 	if api is ApiGuard:
 		return
 	var safe = ApiGuard.new()
 	safe.request_dump = api.request_dump if api != null else handler
+	safe.original = api
 	handler.api = safe
 	print("[real_quad] race uploads disabled")

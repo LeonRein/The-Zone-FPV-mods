@@ -97,6 +97,10 @@ WITH THE OTHER MODS
   drone added by the drones mod uses its block's prop_mm, ducted,
   wheelbase_mm and motor_ms, and the rest from the quad it is built on.
 
+  A drone a real_quad flight model flies has that model's own Betaflight
+  controller instead: none of the settings here (PIDs, filters, airmode)
+  apply to it, only to the drones without a model.
+
 
 HOW IT WORKS
   The game's quad is the script player_rigid_body.gd. At startup flight_controller

@@ -149,7 +149,7 @@ static func replay(L: Flight, a: int, b: int, p: Dictionary, cfg: Dictionary, vs
 			ubuf.append(u)
 			var uc: PackedFloat64Array = ubuf.pop_front()
 			for _s in n_sub:
-				q.step(uc, dtp, basis, zero, zero, true)
+				q.step(uc, dtp, basis, zero)
 		var o: Vector3 = q.omega * R2D
 		rg[0].append(o.x)
 		rg[1].append(o.y)

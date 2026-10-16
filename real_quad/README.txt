@@ -36,9 +36,11 @@ WHAT CHANGES
       rates="model" takes those of the real quad
     - Betaflight 2026.6's rate loop, with the settings read from the real
       quad's own blackbox header: rates, RC smoothing, feedforward, PID
-      with I-term relax and anti-gravity, D filters and RPM filter, TPA,
-      dynamic idle, airmode and the mixer. It runs at the firmware's own
-      rate (4000 times a second for freestyle5), several times each tick
+      with I-term relax and anti-gravity, the gyro and D filters (RPM
+      filter, dynamic and static notches, lowpasses; the gyro's own at the
+      gyro rate), TPA, dynamic idle, airmode and the mixer. It runs at the
+      firmware's own rate (4000 times a second for freestyle5), several
+      times each tick
     - four motors follow the loop's outputs through the ESC and motor
       response worked out from the logs (speed against throttle, voltage
       and prop load, the delay of the signal and the motor). Each prop
@@ -69,8 +71,8 @@ WHAT CHANGES
       dirty_air's descent curve replaces the props' own inflow, so nothing
       counts twice). dirty_air's wash and wake stay its own (1); each
       model sets the gusts of the old wake (plant.json dirty_air_gust;
-      freestyle5 6.79, freestyle35 4.01) and a light turbulence in calm
-      air (turb_base_ms; 0.249 and 0.193 m/s), calibrated so that the gyro
+      freestyle5 5.54, freestyle35 4.92) and a light turbulence in calm
+      air (turb_base_ms; 0.232 and 0.199 m/s), calibrated so that the gyro
       shakes as much as the real quad's did in its logs: a drop and catch
       as its worst moments, a hover as its calm ones. Dropping straight down and
       punching out is the worst case. Without dirty_air the quad flies in
@@ -92,16 +94,17 @@ WHAT CHANGES
       logs: about 25%; freestyle35 32%, its logs about 30%)
 
   The CPU: about a quarter of a millisecond a physics tick for the loop at
-  4000 Hz (roughly an eighth of a core), about 0.4 ms at 8000 Hz.
+  4000 Hz with the dynamic notch (roughly a ninth of a core), about 0.3 ms
+  at 8000 Hz.
 
 
 MODELS
   A model is a folder in real_quad/models with three files:
     craft.json  who it is: id, name, zone_vehicle_id (the game's drone it
                 is made for), weight, linear_drag (the default of the
-                drag setting) and a description of the hardware. Its
-                camera angle and fov are not used: the game's camera
-                settings apply
+                drag setting) and a description of the hardware. (The
+                camera_angle_deg and camera_fov_deg of older models are
+                ignored: the game's camera settings apply)
     fc.json     the real flight controller's settings, from its blackbox
                 header: the loop rate, rates, PIDs, filters...
     plant.json  the quad worked out from the logs: motors, thrust and
@@ -157,8 +160,8 @@ MODELS... (THE MODEL MANAGER)
   calibrated: drop and catch ... (log ...), calm ... (log ...)", or why
   not (dirty_air not installed, no calm hovers or no drops in the logs:
   class values, and what to fly). A model calibrated with another version
-  of dirty_air than the one installed offers "Recalibrate prop wash",
-  which runs only that step.
+  of dirty_air than the one installed says so on its page: rebuild it to
+  calibrate again.
 
 
 WITH THE OTHER MODS
@@ -181,7 +184,14 @@ WITH THE OTHER MODS
       flight_controller stays out altogether and says so in its
       status.txt: real_quad then flies its drones and the game the rest
 
-  These work with real_quad, and the model uses what they give:
+  These work with real_quad, and the model uses what they give. They need
+  the versions that came with real_quad (dirty_air 1.1, battery_sag 1.3.1,
+  prop_damage 1.0.1 and the like: small additions for flight models, the
+  rest unchanged). With a stock version of the same mods - the unpatched
+  one from the mod's own download - real_quad still flies, but without
+  what that mod would give the model (clean air, a pack that does not
+  drain, new props), and status.txt and the Mods page say "a stock
+  version" instead of "not loaded":
     - dirty_air: the prop wash, and the floor and ceiling. real_quad calls
       its set_model() each tick (the model's thrust, props, frame, wash,
       wake and gust); dirty_air then works out the air at each prop of that
@@ -190,7 +200,8 @@ WITH THE OTHER MODS
       ceiling_effect) apply as for every drone
     - battery_sag: its pack is the model's (see WHAT CHANGES). real_quad
       drives it with external_pack() and drive(), and the motors run on its
-      voltage
+      voltage. hold_cell_volts does nothing for a modelled quad: its motors
+      run on the pack's real voltage, and so does the OSD
     - prop_damage: worn props lose thrust in their own rotor (a broken prop
       gives none: the quad usually goes down, as a real one does), and a
       prop out of balance shakes the gyro the Betaflight loop reads - a
@@ -210,13 +221,14 @@ WITH THE OTHER MODS
       has real_quad's settings, and pilot_audio places the quad's sound.
       real_quad also puts the model's four rotor speeds on the quad
       (metadata "motor_rpm", rpm) for a sound mod that can use them
-    - race times are never posted while real_quad is in effect, as the
+    - race times are never posted while a model flies the quad, as the
       physics are not the game's
 
   These do not reach a modelled quad, as the model has its own:
     - rotor_drag: the model has its own rotor drag (drag= in settings.cfg);
-      rotor_drag still sets the body's damping, which real_quad does not
-      use
+      rotor_drag still sets the body's damping, which the physics engine
+      ignores for such a body (checked: a body on a custom integrator keeps
+      its speed whatever its damping), so engine_damping does nothing
     - motor_response: the model has its own motors
 
   This stands aside:
@@ -251,7 +263,11 @@ HOW IT WORKS
   script's md5 is checked). After a game update real_quad stays out, the
   game runs as without it and status.txt says so, until real_quad is
   updated. unknown_game_version=true tries it anyway, if the script still
-  has everything the hook needs.
+  has everything the hook needs: it is checked that the script has the
+  methods and variables used, no _ready() or _integrate_forces() of its own
+  (player.gd replaces those without calling the game's), and that the game's
+  ZGamestate, ZSettings (the pause flag, wind, OSD values, rates) and
+  z_api.gd still have what the hook reads.
 
   The files: flightmodel/ (bf_controller.gd the Betaflight port, bf_quad.gd
   the quad, bf_model.gd the model as the hook uses it, model_registry.gd
@@ -276,6 +292,16 @@ SETTINGS
           none (times the wash and wake the model hands to dirty_air)
         drag: the props' drag on the quad moving across them, 1/s at hover;
           0 = the model's own
+    - a drone the drones mod adds (zm_vehicle with base=) is flown by the
+      game's physics: its id has no model. To fly the model of the drone it
+      is built on, add a section of its id to settings.cfg and name the
+      model, e.g.
+          [meteor75]
+          model="freestyle35"
+      (a model's page in Models..., Fly it on, does the same). The
+      model's weight, thrust and top speed then replace the block's. Until
+      then, the Mods page shows the settings of the drone it is built on,
+      which do not apply to the added drone; the note at the top says so
 
 
 THE GAME'S OWN SETTINGS
@@ -292,14 +318,20 @@ THE GAME'S OWN SETTINGS
       thrust and top speed (the model's mass, inertia, motors, props and
       battery).
     Turtle mode and the pause menu use the game's own physics, as for any
-      drone: the model flies again when you are back.
+      drone: the model flies again when you are back, with its rotors,
+      controller and pack as they were. It starts from rest again only for
+      another drone or model, and after a respawn or a teleport.
+    The test wing (and any drone the game flies with another physics
+      handler than the quad's) is never flown by a model.
 
 
 MULTIPLAYER AND RACES
   Only the quad you fly is changed, on your computer; others see it fly
   (its position and attitude). The game sends no motor speeds, so what
   others hear of it is their own game's (or pilot_audio's) idea of it.
-  Race times are not submitted.
+  Race times are not submitted while a model flies the quad (nor when it
+  is put aside for the pause menu or turtle mode); with the game's own
+  physics the game's race upload is as without real_quad.
 
 
 INSTALL

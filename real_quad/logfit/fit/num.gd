@@ -20,6 +20,22 @@ const EPS := 2.220446049250313e-16
 
 # ------------------------------------------------------------------ masks --
 
+## True at every 10 000th i if cancel answers true: the poll of the long per-sample loops.
+static func stop(cancel: Callable, i: int) -> bool:
+	return i % 10000 == 0 and cancel.is_valid() and cancel.call()
+
+
+## [fn.call(0), ..., fn.call(n - 1)], the calls spread over the engine's worker pool (all cores but one, each thread
+## taking the next index when it is free). fn(i) may read shared data but must write only what it returns.
+static func parallel_for(n: int, fn: Callable) -> Array:
+	var out := []
+	out.resize(n)
+	if n > 0:
+		WorkerThreadPool.wait_for_group_task_completion(WorkerThreadPool.add_group_task(
+			func(i: int) -> void: out[i] = fn.call(i), n, maxi(1, OS.get_processor_count() - 1), true, "logfit"))
+	return out
+
+
 ## Runs of a mask: [a0, b0, a1, b1, ...], each run a..b-1.
 static func runs(mask: PackedByteArray) -> PackedInt32Array:
 	var out := PackedInt32Array()

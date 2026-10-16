@@ -88,6 +88,12 @@ SETTINGS
   block (the Meteor75 Pro II: 46 mm, ducted).
 
 
+  A drone a real_quad flight model flies is not touched by this: the model
+  has its own rotor drag, and the physics engine ignores the forces (and
+  the engine_damping) set on a body the model integrates. strength and
+  engine_damping do nothing for it.
+
+
 MULTIPLAYER AND RACES
   Only the quad you fly is changed, on your computer; other players see
   where you fly as ever. Like any change to the flight model it changes how

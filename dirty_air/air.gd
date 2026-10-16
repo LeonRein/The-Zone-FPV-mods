@@ -107,7 +107,6 @@ var drone := {}
 var drone_id := "-"
 # what the last tick did, for the tests and status
 var wake := 0.0                 # how deep in its own wake (0-1)
-var descent_ratio := 1.0        # mean thrust ratio from the descent
 var ground := [1.0, 1.0, 1.0, 1.0]
 var ceiling := [1.0, 1.0, 1.0, 1.0]
 var force := Vector3.ZERO
@@ -595,7 +594,6 @@ func _air_at(gt: Transform3D, lv: Vector3, windv: Vector3, thrust: float, dt: fl
 	var climb := maxf(vz, 0.0) - maxf(air.dot(up), 0.0)
 	if climb != 0.0:
 		mean *= clampf(1.0 - K_INFLOW * climb / vh, 0.4, 1.2)
-	descent_ratio = mean
 	# each prop's own fluctuation: noise with a corner at the wake's
 	# frequency, about half vh over the prop's circumference
 	var fc := clampf(0.5 * vh / (TAU * _r), 4.0, 40.0)

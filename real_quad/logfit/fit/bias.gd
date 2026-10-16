@@ -23,7 +23,7 @@ static func _slope(x: PackedFloat64Array, sw: PackedFloat64Array) -> float:
 
 
 ## {beta [3], per_log_1e3 {session: [3]}, spread [3] or null, n} or null without hover.
-static func fit(logs: Array, uses: Array, arm: float, kT: float, kQ: float, s0: float) -> Variant:
+static func fit(logs: Array, uses: Array, arm: float, kT: float, kQ: float, s0: float, cancel: Callable = Callable()) -> Variant:
 	var idx: Array = []
 	for i in logs.size():
 		if logs[i].has_acc():
@@ -37,7 +37,7 @@ static func fit(logs: Array, uses: Array, arm: float, kT: float, kQ: float, s0: 
 	var per := {}
 	for i in idx:
 		var L: Flight = logs[i]
-		var m := Thrust.hover_mask(L, uses[i], true)
+		var m := Thrust.hover_mask(L, uses[i], true, cancel)
 		if m.count(1) < 2.0 * L.fs:
 			continue
 		var r := PackedFloat64Array()
@@ -45,6 +45,8 @@ static func fit(logs: Array, uses: Array, arm: float, kT: float, kQ: float, s0: 
 		var y := PackedFloat64Array()
 		var s := PackedFloat64Array()
 		for j in L.n:
+			if Num.stop(cancel, j):
+				return null
 			if m[j] == 0:
 				continue
 			var W := PackedFloat64Array([0, 0, 0, 0])

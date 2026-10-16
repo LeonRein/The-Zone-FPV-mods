@@ -135,116 +135,128 @@ static func fit(rows: Array, kv_rad: float, v_guess: float, iters: int = 10, can
 	var P: Array = []
 	for m in 4:
 		P.append(PackedFloat64Array([0.0, 0.0, 0.0]))
-	var ikv := 1.0 / kv_rad
+	var R := rows.size()
 	for it in iters:
 		if cancel.is_valid() and cancel.call():
 			return []
-		var Vs: Array = rows.map(func(r): return model_v(r, V))
+		var Vs := Num.parallel_for(R, func(ri: int) -> PackedFloat64Array: return model_v(rows[ri], V))
+		# normal equations: the sums of every (motor, row), added up in row order
+		var parts := Num.parallel_for(4 * R, func(j: int) -> PackedFloat64Array:
+			return PackedFloat64Array() if cancel.is_valid() and cancel.call() else _normal_sums(rows[j % R], j / R, Vs[j % R], kv_rad))
+		if cancel.is_valid() and cancel.call():
+			return []
 		for m in 4:
-			var s := PackedFloat64Array()
-			s.resize(9)
-			s.fill(0.0)
-			for ri in rows.size():
-				if cancel.is_valid() and cancel.call():
-					return []
-				var r: Dictionary = rows[ri]
-				var ok: PackedByteArray = r.ok
-				var uu: PackedFloat64Array = r.u[m]
-				var ww: PackedFloat64Array = r.w[m]
-				var yy: PackedFloat64Array = r.dw[m]
-				var vv: PackedFloat64Array = Vs[ri]
-				var s00 := 0.0
-				var s01 := 0.0
-				var s02 := 0.0
-				var s11 := 0.0
-				var s12 := 0.0
-				var s22 := 0.0
-				var y0 := 0.0
-				var y1 := 0.0
-				var y2 := 0.0
-				for i in ok.size():
-					if ok[i] == 0:
-						continue
-					var w := ww[i]
-					var x0 := uu[i] * vv[i] - w / kv_rad
-					var x1 := -(w * w)
-					var y := yy[i]
-					s00 += x0 * x0
-					s01 += x0 * x1
-					s02 -= x0
-					s11 += x1 * x1
-					s12 -= x1
-					s22 += 1.0
-					y0 += x0 * y
-					y1 += x1 * y
-					y2 -= y
-				s[0] += s00
-				s[1] += s01
-				s[2] += s02
-				s[3] += s11
-				s[4] += s12
-				s[5] += s22
-				s[6] += y0
-				s[7] += y1
-				s[8] += y2
+			var s := Num.zeros(9)
+			for ri in R:
+				for q in 9:
+					s[q] += parts[m * R + ri][q]
 			P[m] = Num.solve_normal([[s[0], s[1], s[2]], [s[1], s[3], s[4]], [s[2], s[4], s[5]]], PackedFloat64Array([s[6], s[7], s[8]]))
+		# the voltage scale (rows with a logged vbat, per motor) and the window voltages (the others, per row)
+		var sc := Num.parallel_for(4 * R, func(j: int) -> Variant:
+			var r: Dictionary = rows[j / 4]
+			if (r.vbat as PackedFloat64Array).is_empty():
+				return _window_volts(r, P, kv_rad) if j % 4 == 0 else null
+			return _scale_sums(r, P[j % 4], j % 4, kv_rad))
 		var num_s := 0.0
 		var den_s := 0.0
-		for ri in rows.size():
-			var r: Dictionary = rows[ri]
-			var ok: PackedByteArray = r.ok
-			var vb: PackedFloat64Array = r.vbat
-			if not vb.is_empty():
-				for m in 4:
-					var a: float = P[m][0]
-					var b: float = P[m][1]
-					var c: float = P[m][2]
-					var uu: PackedFloat64Array = r.u[m]
-					var ww: PackedFloat64Array = r.w[m]
-					var yy: PackedFloat64Array = r.dw[m]
-					var ns := 0.0
-					var ds := 0.0
-					for i in ok.size():
-						if ok[i] == 0:
-							continue
-						var w := ww[i]
-						var lhs := yy[i] + a * w / kv_rad + b * w * w + c
-						var x := a * uu[i] * vb[i]
-						ns += lhs * x
-						ds += x * x
-					num_s += ns
-					den_s += ds
-				continue
-			# per 2-s window
-			var win: PackedInt32Array = r.win
-			var acc := {}
-			for i in ok.size():
-				if ok[i] == 0:
-					continue
-				var k := win[i]
-				var e: PackedFloat64Array
-				if acc.has(k):
-					e = acc[k]
-				else:
-					e = PackedFloat64Array([0.0, 0.0, 0.0])
-					acc[k] = e
-				e[2] += 1.0
-				for m in 4:
-					var a: float = P[m][0]
-					var w: float = r.w[m][i]
-					var au: float = a * r.u[m][i]
-					var lhs: float = r.dw[m][i] + a * w / kv_rad + P[m][1] * w * w + P[m][2]
-					e[0] += lhs * au
-					e[1] += au * au
-			for k in acc:
-				var e: PackedFloat64Array = acc[k]
-				if e[2] < 200.0:
-					continue
-				V[wkey(r.name, k)] = e[0] / e[1]
+		for x in sc:
+			if x is Dictionary:
+				V.merge(x, true)
+			elif x != null:
+				num_s += x[0]
+				den_s += x[1]
 		if den_s > 0.0:
 			V[VBAT_SCALE] = num_s / den_s
 	var r2 := _r2(rows, P, V, kv_rad)
 	return [P, V, r2]
+
+
+## The 9 sums of the normal equations (s00 s01 s02 s11 s12 s22, then y0 y1 y2) of motor m over a row's ok samples
+static func _normal_sums(r: Dictionary, m: int, vv: PackedFloat64Array, kv_rad: float) -> PackedFloat64Array:
+	var ok: PackedByteArray = r.ok
+	var uu: PackedFloat64Array = r.u[m]
+	var ww: PackedFloat64Array = r.w[m]
+	var yy: PackedFloat64Array = r.dw[m]
+	var s00 := 0.0
+	var s01 := 0.0
+	var s02 := 0.0
+	var s11 := 0.0
+	var s12 := 0.0
+	var s22 := 0.0
+	var y0 := 0.0
+	var y1 := 0.0
+	var y2 := 0.0
+	for i in ok.size():
+		if ok[i] == 0:
+			continue
+		var w := ww[i]
+		var x0 := uu[i] * vv[i] - w / kv_rad
+		var x1 := -(w * w)
+		var y := yy[i]
+		s00 += x0 * x0
+		s01 += x0 * x1
+		s02 -= x0
+		s11 += x1 * x1
+		s12 -= x1
+		s22 += 1.0
+		y0 += x0 * y
+		y1 += x1 * y
+		y2 -= y
+	return PackedFloat64Array([s00, s01, s02, s11, s12, s22, y0, y1, y2])
+
+
+## [numerator, denominator] of the vbat scale for motor m of a row with a logged vbat
+static func _scale_sums(r: Dictionary, p: PackedFloat64Array, m: int, kv_rad: float) -> PackedFloat64Array:
+	var ok: PackedByteArray = r.ok
+	var vb: PackedFloat64Array = r.vbat
+	var uu: PackedFloat64Array = r.u[m]
+	var ww: PackedFloat64Array = r.w[m]
+	var yy: PackedFloat64Array = r.dw[m]
+	var a := p[0]
+	var b := p[1]
+	var c := p[2]
+	var ns := 0.0
+	var ds := 0.0
+	for i in ok.size():
+		if ok[i] == 0:
+			continue
+		var w := ww[i]
+		var lhs := yy[i] + a * w / kv_rad + b * w * w + c
+		var x := a * uu[i] * vb[i]
+		ns += lhs * x
+		ds += x * x
+	return PackedFloat64Array([ns, ds])
+
+
+## The voltage of each 2-s window (with at least 200 ok samples) of a row without a logged vbat: {key: volts}
+static func _window_volts(r: Dictionary, P: Array, kv_rad: float) -> Dictionary:
+	var ok: PackedByteArray = r.ok
+	var win: PackedInt32Array = r.win
+	var acc := {}
+	for i in ok.size():
+		if ok[i] == 0:
+			continue
+		var k := win[i]
+		var e: PackedFloat64Array
+		if acc.has(k):
+			e = acc[k]
+		else:
+			e = PackedFloat64Array([0.0, 0.0, 0.0])
+			acc[k] = e
+		e[2] += 1.0
+		for m in 4:
+			var a: float = P[m][0]
+			var w: float = r.w[m][i]
+			var au: float = a * r.u[m][i]
+			var lhs: float = r.dw[m][i] + a * w / kv_rad + P[m][1] * w * w + P[m][2]
+			e[0] += lhs * au
+			e[1] += au * au
+	var out := {}
+	for k in acc:
+		var e: PackedFloat64Array = acc[k]
+		if e[2] >= 200.0:
+			out[wkey(r.name, k)] = e[0] / e[1]
+	return out
 
 
 ## R^2 of the equation error over all ok samples and motors: 1 - var(residual) / var(dw), in the order
@@ -253,38 +265,66 @@ static func fit(rows: Array, kv_rad: float, v_guess: float, iters: int = 10, can
 ## same numbers in the same order, so the same result as variance() of the arrays; about 1 GB less
 ## at an hour of flight).
 static func _r2(rows: Array, P: Array, V: Dictionary, kv_rad: float) -> float:
-	var ctx := {"rows": rows, "P": P, "kv": kv_rad, "vv": rows.map(func(r): return model_v(r, V)), "ix": [], "off": PackedInt64Array([0])}
-	for r in rows:
-		var ok: PackedByteArray = r.ok
-		var ix := PackedInt32Array()
+	var ix := Num.parallel_for(rows.size(), func(ri: int) -> PackedInt32Array:
+		var ok: PackedByteArray = rows[ri].ok
+		var o := PackedInt32Array()
 		for i in ok.size():
 			if ok[i] != 0:
-				ix.append(i)
-		ctx.ix.append(ix)
-		ctx.off.append(ctx.off[-1] + 4 * ix.size())
-	var n: int = ctx.off[-1]
+				o.append(i)
+		return o)
+	var off := PackedInt64Array([0])
+	for x: PackedInt32Array in ix:
+		off.append(off[-1] + 4 * x.size())
+	var ctx := {"rows": rows, "P": P, "kv": kv_rad, "ix": ix, "off": off,
+		"vv": Num.parallel_for(rows.size(), func(ri: int) -> PackedFloat64Array: return model_v(rows[ri], V))}
+	var n: int = off[-1]
 	if n == 0:
 		return 1.0 - Num.variance(PackedFloat64Array()) / Num.variance(PackedFloat64Array())
-	var buf := PackedFloat64Array()
-	buf.resize(128)
 	var out := [0.0, 0.0]
 	for kind in 2:
-		var mean_x := _psum_blocks(n, buf, _fill.bind(ctx, kind, false, 0.0)) / n
-		out[kind] = _psum_blocks(n, buf, _fill.bind(ctx, kind, true, mean_x)) / n
+		var mean_x := _psum_blocks(n, _fill.bind(ctx, kind, false, 0.0)) / n
+		out[kind] = _psum_blocks(n, _fill.bind(ctx, kind, true, mean_x)) / n
 	return 1.0 - out[0] / out[1]
 
 
-## Num.psum over n values that fill(buf, a, count) writes to buf[0..count) for the values a..a+count-1
-## (blocks of at most 128, as psum's leaves)
-static func _psum_blocks(n: int, buf: PackedFloat64Array, fill: Callable, a: int = 0, cnt: int = -1) -> float:
-	if cnt < 0:
-		cnt = n
+## Num.psum over n values that fill(buf, a, count) writes to buf[0..count) for the values a..a+count-1:
+## the leaves (blocks of at most 128, as psum's) are summed in parallel, then added in the tree's order.
+static func _psum_blocks(n: int, fill: Callable) -> float:
+	var leaves := PackedInt64Array()
+	_leaves(0, n, leaves)
+	var nl := leaves.size() / 2
+	var chunks := Num.parallel_for((nl + 255) / 256, func(c: int) -> PackedFloat64Array:
+		var buf := Num.zeros(128)
+		var vals := PackedFloat64Array()
+		for l in range(c * 256, mini(nl, (c + 1) * 256)):
+			fill.call(buf, leaves[2 * l], leaves[2 * l + 1])
+			vals.append(Num.psum(buf, 0, leaves[2 * l + 1]))
+		return vals)
+	var vals := PackedFloat64Array()
+	for c: PackedFloat64Array in chunks:
+		vals.append_array(c)
+	return _tree_sum(n, vals, [0])
+
+
+## Starts and sizes of the leaves of the sum over cnt values from a (left half: half of cnt rounded down to a multiple of 8)
+static func _leaves(a: int, cnt: int, out: PackedInt64Array) -> void:
 	if cnt <= 128:
-		fill.call(buf, a, cnt)
-		return Num.psum(buf, 0, cnt)
+		out.append(a)
+		out.append(cnt)
+		return
 	var n2 := cnt / 2
 	n2 -= n2 % 8
-	return _psum_blocks(n, buf, fill, a, n2) + _psum_blocks(n, buf, fill, a + n2, cnt - n2)
+	_leaves(a, n2, out)
+	_leaves(a + n2, cnt - n2, out)
+
+
+static func _tree_sum(cnt: int, vals: PackedFloat64Array, pos: Array) -> float:
+	if cnt <= 128:
+		pos[0] += 1
+		return vals[pos[0] - 1]
+	var n2 := cnt / 2
+	n2 -= n2 % 8
+	return _tree_sum(n2, vals, pos) + _tree_sum(cnt - n2, vals, pos)
 
 
 ## The values a..a+cnt-1 of r2's sequence: kind 0 the residual dw - model, 1 dw; squared deviation from c if sq
@@ -499,18 +539,19 @@ static func refine_dynamics(rows: Array, P: Array, V: Dictionary, kv_rad: float,
 	var sub := lambda_subset(rows, max_samples)
 	var vvs: Array = sub.map(func(r): return model_v(r, V))
 	var cost := func(lam: float) -> float:
+		if cancel.is_valid() and cancel.call():
+			return INF
+		var Pl := scaled(P, lam)
+		var oks: Array = sub.map(func(r): return (r.ok as PackedByteArray).count(1))
+		var errs := Num.parallel_for(sub.size(), func(j: int) -> PackedFloat64Array:
+			return free_run_error_hz(sub[j], simulate(sub[j], Pl, V, kv_rad, vvs[j]))[0] if oks[j] > 0 else PackedFloat64Array())
 		var se := 0.0
 		var nn := 0
-		var Pl := scaled(P, lam)
 		for j in sub.size():
-			if cancel.is_valid() and cancel.call():
-				return INF
-			var r: Dictionary = sub[j]
-			var k := (r.ok as PackedByteArray).count(1)
+			var k: int = oks[j]
 			if k > 0:
-				var rms: PackedFloat64Array = free_run_error_hz(r, simulate(r, Pl, V, kv_rad, vvs[j]))[0]
 				var s2 := 0.0
-				for v in rms:
+				for v in errs[j]:
 					s2 += v * v
 				se += s2 * k
 				nn += 4 * k
