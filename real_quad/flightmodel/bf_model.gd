@@ -595,7 +595,7 @@ func integrate_forces(_body: RigidBody3D, state: PhysicsDirectBodyState3D, rc: D
 			ud[i] = mq[o + i]        # the command of _mq_n steps ago goes to the motors, this one waits
 			mq[o + i] = clampf((mi - 48.0) / 1999.0, 0.0, 1.0) if mi > 0.0 else 0.0
 		_mq_i = (_mq_i + 1) % _mq_n
-		var acc := q.step(ud, dt, basis, _vel, pos, armed)
+		var acc := q.step(ud, dt, basis, _vel)
 		# attitude update with the new body rates
 		var qo := q.omega
 		var rot_local := Vector3(-qo.y, qo.z, -qo.x) * dt     # (Quad.flu_to_local)

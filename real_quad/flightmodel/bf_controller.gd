@@ -57,10 +57,6 @@ const DYN_NOTCH_CALC_TICKS := 12    # 3 axes x 4 steps
 const DYN_NOTCH_UPDATE_MIN_HZ := 2000.0
 const CELL_VOLTAGE_FULL_CV := 420.0
 const SAG_TASK_US := 5000           # the fast voltage task (200 Hz)
-# quad X mixer: roll, pitch, yaw columns. 0 REAR_R, 1 FRONT_R, 2 REAR_L, 3 FRONT_L
-const MIX_ROLL := [-1.0, -1.0, 1.0, 1.0]
-const MIX_PITCH := [1.0, -1.0, 1.0, -1.0]
-const MIX_YAW := [-1.0, 1.0, 1.0, -1.0]
 
 var cfg: Dictionary
 var gyro_dt: float
@@ -1402,7 +1398,7 @@ func mix_table() -> void:
 		throttle = maxf(throttle, 0.01)
 	if thrust_lin != 0.0:
 		throttle *= 1.0 - thrust_lin * (1.0 - throttle)
-	# the quad X mixer (MIX_ROLL, MIX_PITCH, MIX_YAW of the motors 0..3, written out; the signs multiply exactly)
+	# the quad X mixer, written out (motors 0 REAR_R, 1 FRONT_R, 2 REAR_L, 3 FRONT_L; the signs multiply exactly)
 	var mix := _mix
 	var v := -roll + pitch - yaw
 	var mmax := maxf(v, 0.0)
