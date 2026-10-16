@@ -147,7 +147,7 @@ func motor(P0: Array, P: Array, lam: float, r0: float, r1: float, r2: float, V: 
 		"- Equation-error fit (R² %s): a %s, b %s, c %s" % [f(r2, 3), f(_col(P0, 0), 4), f(_col(P0, 1), 4), f(_col(P0, 2), 3)],
 		"- Dynamics refinement λ = %s (a, b, c scaled together, steady state unchanged): free run %s → %s Hz RMS" % [f(lam, 3), f(r0, 3), f(r1, 3)]]
 	if tp != null:
-		lines.append("- Torque path (chirps: the free run's ω² against the gyro, 5–50 Hz): a, b, c × %s, dead time 1.0 → %.1f ms; time constant at the chirps %s → %s ms (the eRPM telemetry lags the rotors: the eRPM sets the steady state, the gyro the speed)" % [
+		lines.append("- Torque path (chirps: the free run's ω² against the gyro, instrumented by the setpoint, 5–60 Hz; gain, speed and dead time in one fit weighted by the coherence): a, b, c × %s, dead time 1.0 → %.1f ms; time constant at the chirps %s → %s ms (the eRPM telemetry lags the rotors: the eRPM sets the steady state, the gyro the speed)" % [
 			f(tp.lambda, 3), tp.delay_s * 1e3, f(tp.tau0_s * 1e3, 3), f(tp.tau0_s / tp.lambda * 1e3, 3)])
 	lines.append_array(["- Final: a %s, b %s, c %s" % [f(_col(P, 0), 4), f(_col(P, 1), 4), f(_col(P, 2), 3)],
 		"- Response measured/simulated (roll+pitch differential, eRPM fit) at " + ", ".join(gl),
@@ -231,21 +231,31 @@ func rotation(fit: Dictionary, rp: Dictionary, kQ: float, yaw_rev: bool, chirp: 
 		var parts: Array = []
 		var rng: Array = []
 		var ok := true
+		var plo := INF
+		var phi := -INF
 		for ax in 2:
 			var vals: Array = []
+			var phs: Array = []
 			var lo := INF
 			var hi := -INF
 			for i in Motor.TP_FREQS.size():
-				if Motor.TP_FREQS[i] >= 10:
-					var v: float = tq[ax][i]
+				var fq: int = Motor.TP_FREQS[i]
+				if fq >= 10 and fq <= 50:
+					var v: float = tq[ax][0][i]
 					vals.append("%.2f" % v)
 					lo = minf(lo, v)
 					hi = maxf(hi, v)
 					ok = ok and 0.85 <= v and v <= 1.15
-			parts.append(["roll", "pitch"][ax] + " " + ", ".join(vals))
+				if fq >= 20 and fq <= 50:
+					var p: float = tq[ax][1][i]
+					phs.append("%+.1f" % p)
+					plo = minf(plo, p)
+					phi = maxf(phi, p)
+					ok = ok and absf(p) <= 7.0
+			parts.append(["roll", "pitch"][ax] + " " + ", ".join(vals) + " (phase 20–50 Hz " + ", ".join(phs) + "°)")
 			rng.append("%s %.2f–%.2f" % [["roll", "pitch"][ax], lo, hi])
 		lines.append("Torque path measured/sim (gain × free run vs. gyro, 10–50 Hz): " + "; ".join(parts))
-		gate("torque_path", "Torque path 10–50 Hz", ok, "measured/sim %s (0.85–1.15)" % ", ".join(rng))
+		gate("torque_path", "Torque path 10–50 Hz", ok, "measured/sim %s (0.85–1.15), phase 20–50 Hz %+.1f…%+.1f° (±7°)" % [", ".join(rng), plo, phi])
 	if not chirp:
 		default("Rate damping", "0", "not identifiable without chirp")
 	sec("Rotational dynamics", lines)
