@@ -10,18 +10,21 @@ extends RefCounted
 ##   steps      roll, pitch and yaw stick steps at hover throttle, near idle, and roll steps at full throttle
 ##   flip       a full-stick roll and a pitch flip at low throttle, then the catch
 ##   propwash   calibrate.gd's drop and catch through dirty_air's air (if installed), PW_SEEDS seeds
+##   margins    a chirp on each axis's PID sum at hover, on the identified and the perturbed plant (not scored)
 ## Each is scored by its tracking error (RMS of setpoint - rate, deg/s; propwash: its worst 0.25-s window
 ## band-passed 15-78 Hz, as the calibration); the cost is the mean over the groups of tuned / flown.
 ## Constraints (a candidate that breaks one is not taken):
 ##   saturation  the share of time the mixer runs out of authority (motor_mix_range > 1) at most the flown
 ##               tune's + SAT_SLACK
-##   robustness  the hover steps again on a perturbed plant (inertia x PERTURB_INERTIA, motor delay x
-##               PERTURB_DELAY: more loop gain and more lag at once, for the identification's error): the
-##               ringing (RMS of the tracking error band-passed 20-200 Hz on the plateaus after the steps, deg/s)
-##               at most RING_SLACK x the flown tune's there, or RING_FLOOR
-##   overshoot   of the hover roll and pitch steps at most MAX_OVERSHOOT (or the flown tune's)
-##   bounds      the class's (classes.gd TUNE: P, I, FF, highest D, D/P band, TPA, dynamic idle, anti-gravity,
-##               thrust linear), widened to a flown value outside them
+##   margins     per axis, on the identified plant and on a perturbed one (inertia x PERTURB_INERTIA, motor
+##               delay x PERTURB_DELAY: more loop gain and more lag at once, for the identification's error):
+##               peak sensitivity Ms at most and phase margin at least the flown tune's, within MS_TOL and
+##               PM_TOL (margins(): a chirp added to the PID sum at hover)
+##   overshoot   of the hover roll and pitch steps and at the replay's stick stops at most MAX_OVERSHOOT (or
+##               the flown tune's)
+##   limits      each setting at most TRUST from the flown value, and the class's bounds (classes.gd TUNE: P, I,
+##               FF, highest D, D/P band, TPA, dynamic idle, anti-gravity, thrust linear), widened to a flown
+##               value outside them
 ## Search: staged coordinate search from the flown tune - stage 1 P, D, D-max, FF, I per axis (relative steps
 ## STEPS1), stage 2 TPA, dynamic idle, anti-gravity, thrust linear (absolute steps STEPS2, halved per round);
 ## each setting tried up and down, the first move that lowers the cost by MIN_GAIN is kept.
@@ -45,9 +48,15 @@ const ROUNDS2 := 2
 const MIN_GAIN := 0.002
 const PW_SEEDS := 2
 const SAT_SLACK := 0.005
-const RING_SLACK := 1.2
-const RING_FLOOR := 0.5              # deg/s
-const MAX_OVERSHOOT := 0.1           # of a hover roll or pitch step (or the flown tune's, if more)
+const MAX_OVERSHOOT := 0.1           # of a hover roll or pitch step and at the replay's stick stops (or the flown tune's, if more)
+const STOP_DPS := 200.0              # a stick stop: the setpoint changed this much in the 0.1 s before, then held
+const TRUST := 0.2                   # each setting at most this share from the flown value
+const CHIRP_HZ := [5.0, 400.0]       # the margin chirp's sweep (exponential, CHIRP_S long, CHIRP_AMP in PID sum units)
+const CHIRP_S := 2.0
+const CHIRP_AMP := 20.0
+const MARGIN_HZ := [8.0, 300.0]      # where Ms and the crossover are looked for
+const MS_TOL := 0.01                 # Ms and phase margin "not worse": within the estimate's resolution
+const PM_TOL := 0.5                  # deg
 const PERTURB_INERTIA := 0.8
 const PERTURB_DELAY := 1.5
 const REPLAY_N := 3
@@ -135,6 +144,13 @@ static func bounds(cls: String, flown: Dictionary, k: Array) -> Array:
 	return [floorf(minf(lo, v)), ceilf(maxf(hi, v))]
 
 
+## [lo, hi] a setting may take: its class bounds, and at most TRUST from the flown value
+static func limits(cls: String, flown: Dictionary, k: Array) -> Array:
+	var b := bounds(cls, flown, k)
+	var v := get_v(flown, k)
+	return [maxf(b[0], ceilf(v * (1.0 - TRUST) - 1e-9)), minf(b[1], floorf(v * (1.0 + TRUST) + 1e-9))]
+
+
 ## The D/P band of an axis holds (widened to the flown ratio)
 static func dp_ok(cls: String, flown: Dictionary, cfg: Dictionary, a: int) -> bool:
 	if a == 2 or float(cfg.pid[AX[a]][0]) <= 0.0:
@@ -220,8 +236,7 @@ static func replay_programs(logs: Array, cfg: Dictionary) -> Array:
 	return out
 
 
-## Flies a stick program: {err (deg/s), sat (share), ring (deg/s), t90 (s), overshoot} of the part after the
-## settle time
+## Flies a stick program: {err (deg/s), sat (share), t90 (s), overshoot} of the part after the settle time
 static func fly(sim, cfg: Dictionary, prog: Dictionary) -> Dictionary:
 	sim.model.fc_cfg = cfg
 	sim.start()
@@ -253,29 +268,92 @@ static func fly(sim, cfg: Dictionary, prog: Dictionary) -> Dictionary:
 			if fc.motor_mix_range > 1.0:
 				sat += 1
 	if not is_finite(se):
-		return {"err": INF, "sat": 1.0, "ring": INF}
-	var out := {"err": sqrt(se / maxf(3.0 * cnt, 1.0)), "sat": float(sat) / maxf(cnt, 1.0), "ring": 0.0}
+		return {"err": INF, "sat": 1.0, "overshoot": INF}
+	var out := {"err": sqrt(se / maxf(3.0 * cnt, 1.0)), "sat": float(sat) / maxf(cnt, 1.0)}
 	var edges: PackedInt32Array = prog.edges
 	if edges.size() > 0:
-		out.ring = _ringing(e, edges, n)
 		out.merge(_steps(sp, e, edges))
+	elif prog.group == "replay":
+		out["overshoot"] = _stop_overshoot(sp, e, warm)
 	return out
 
 
-## RMS of the tracking error band-passed 20-200 Hz on the plateaus (0.08 s after each step's start to the next)
-static func _ringing(e: Array, edges: PackedInt32Array, n: int) -> float:
-	var sos := Num.butter(2, [20.0, 200.0], "bandpass", TICK_HZ)
-	var ss := 0.0
-	var cnt := 0
+## The largest overshoot at the stick stops (the setpoint changed by STOP_DPS or more in the 0.1 s before, then
+## held within 10 % of that for 50 ms): the peak of the rate past the setpoint in the 0.1 s after, as a share of the change
+static func _stop_overshoot(sp: Array, e: Array, i0: int) -> float:
+	var w := int(0.1 * TICK_HZ)
+	var out := 0.0
 	for a in 3:
-		var f := Num.sosfiltfilt(sos, e[a])
-		for k in edges.size():
-			var a0 := edges[k] + int(0.08 * TICK_HZ)
-			var a1 := edges[k + 1] if k + 1 < edges.size() else n
-			for i in range(a0, a1):
-				ss += f[i] * f[i]
-				cnt += 1
-	return sqrt(ss / maxf(cnt, 1.0))
+		var s: PackedFloat64Array = sp[a]
+		var i := i0 + w
+		while i < s.size() - w:
+			var dlt := s[i] - s[i - w]
+			var held := absf(dlt) >= STOP_DPS
+			if held:
+				for j in range(i, i + w / 2):
+					if absf(s[j] - s[i]) > 0.1 * absf(dlt):
+						held = false
+						break
+			if not held:
+				i += 1
+				continue
+			for j in range(i, i + w):
+				out = maxf(out, -signf(dlt) * e[a][j] / absf(dlt))
+			i += w
+	return out
+
+
+## Stability margins of an axis at hover: a small chirp d added to its PID sum (one PID loop a tick) and
+## S = V/D = 1/(1+L), v the PID sum the mixer gets. {ms: peak sensitivity max |S|, pm: phase margin at the
+## first crossover |L| = 1 (deg)}
+static func margins(sim, cfg: Dictionary, ax: int) -> Dictionary:
+	sim.model.fc_cfg = cfg
+	sim.start()
+	sim.hover_at(HOVER_S)
+	var fc = sim.model.fc
+	var dt: float = fc.dt
+	var n := nearest_po2(roundi(CHIRP_S / dt))
+	var k := log(CHIRP_HZ[1] / CHIRP_HZ[0]) / (n * dt)
+	var d := Num.zeros(n)
+	var v := Num.zeros(n)
+	sim.rc = {"roll": 0.0, "pitch": 0.0, "yaw": 0.0, "throttle": sim.hover_thr}
+	sim.dt = dt
+	sim.st.dt = dt
+	for i in n:
+		if i % 500 == 0 and sim._cancelled():
+			break
+		d[i] = CHIRP_AMP * sin(TAU * CHIRP_HZ[0] * (exp(k * i * dt) - 1.0) / k)
+		fc.pid_inject[ax] = d[i]
+		sim.tick()
+		v[i] = fc.pid_sum[ax]
+	sim.dt = 1.0 / TICK_HZ
+	sim.st.dt = sim.dt
+	if sim._cancelled():
+		return {}
+	var di := Num.zeros(n)
+	var vi := Num.zeros(n)
+	Num.fft(d, di)
+	Num.fft(v, vi)
+	var out := {"ms": 0.0, "pm": 180.0}
+	var crossed := false
+	var f: float = MARGIN_HZ[0]
+	while f <= MARGIN_HZ[1]:            # bands of +-2.5 %: S = sum(V D*) / sum(|D|^2)
+		var sr := 0.0
+		var si := 0.0
+		var dd := 0.0
+		for j in range(ceili(f / 1.025 * n * dt), floori(f * 1.025 * n * dt) + 1):
+			sr += v[j] * d[j] + vi[j] * di[j]
+			si += vi[j] * d[j] - v[j] * di[j]
+			dd += d[j] * d[j] + di[j] * di[j]
+		var s2 := (sr * sr + si * si) / (dd * dd)
+		out.ms = maxf(out.ms, sqrt(s2))
+		var lr := sr / dd / s2 - 1.0         # L = 1/S - 1
+		var li := -si / dd / s2
+		if not crossed and lr * lr + li * li < 1.0:
+			out.pm = wrapf(rad_to_deg(atan2(li, lr)) + 180.0, -180.0, 180.0)
+			crossed = true
+		f *= 1.05
+	return out
 
 
 ## t90 of the first step and the largest overshoot of the roll and pitch steps: {t90 (s), overshoot (share of
@@ -302,13 +380,15 @@ static func _steps(sp: Array, e: Array, edges: PackedInt32Array) -> Dictionary:
 
 # ------------------------------------------------------------------ the evaluation
 
-## {cost, groups {name: metric}, sat, ring_p, ok, why, flights [{name, err}], t90, overshoot}
+## {cost, groups {name: metric}, sat, ok, why, flights [{name, err}], t90, overshoot (hover steps),
+## overshoot_replay (stick stops), ms and pm [[roll, pitch, yaw] nominal, [...] perturbed]}
 func evaluate(sims: Array, cfg: Dictionary, progs: Array, ref: Dictionary) -> Dictionary:
 	var tasks: Array = []
 	for p in progs:
 		tasks.append({"prog": p, "variant": "nominal"})
-	var hover_steps: Dictionary = progs.filter(func(p): return p.name == "steps_hover")[0]
-	tasks.append({"prog": hover_steps, "variant": "perturbed"})
+	for v in ["nominal", "perturbed"]:
+		for ax in 3:
+			tasks.append({"prog": {"name": "margins", "group": "margins"}, "variant": v, "chirp": ax})
 	if sims[0].pw != null:
 		for sd in PW_SEEDS:
 			tasks.append({"prog": {"name": "propwash seed %d" % (sd + 1), "group": "propwash"}, "variant": "air", "seed": sd + 1})
@@ -320,15 +400,17 @@ func evaluate(sims: Array, cfg: Dictionary, progs: Array, ref: Dictionary) -> Di
 	var counts := {}
 	var sat := 0.0
 	var nsat := 0
-	var ring_p := 0.0
-	var out := {"flights": [], "ok": true, "why": ""}
+	var out := {"flights": [], "ok": true, "why": "", "overshoot_replay": 0.0, "ms": [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+		"pm": [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]}
 	for i in tasks.size():
 		var r: Dictionary = res[i] if res[i] is Dictionary else {}
 		if r.is_empty():
 			return {"cost": INF, "ok": false, "why": "cancelled"}
 		var p: Dictionary = tasks[i].prog
-		if tasks[i].variant == "perturbed":
-			ring_p = float(r.ring)
+		if tasks[i].has("chirp"):
+			var vi := 0 if tasks[i].variant == "nominal" else 1
+			out.ms[vi][tasks[i].chirp] = r.ms
+			out.pm[vi][tasks[i].chirp] = r.pm
 			continue
 		var g: String = p.group
 		groups[g] = float(groups.get(g, 0.0)) + float(r.err)
@@ -340,12 +422,12 @@ func evaluate(sims: Array, cfg: Dictionary, progs: Array, ref: Dictionary) -> Di
 		if p.name == "steps_hover":
 			out["t90"] = r.get("t90", -1.0)
 			out["overshoot"] = r.get("overshoot", 0.0)
-			out["ring"] = r.ring
+		if g == "replay":
+			out.overshoot_replay = maxf(out.overshoot_replay, float(r.overshoot))
 	for g in groups:
 		groups[g] = float(groups[g]) / counts[g]
 	out["groups"] = groups
 	out["sat"] = sat / maxf(nsat, 1.0)
-	out["ring_p"] = ring_p
 	if ref.is_empty():
 		out["cost"] = 1.0
 		return out
@@ -353,16 +435,20 @@ func evaluate(sims: Array, cfg: Dictionary, progs: Array, ref: Dictionary) -> Di
 	for g in groups:
 		c += float(groups[g]) / maxf(float(ref.groups[g]), 1e-6)
 	out["cost"] = c / groups.size()
+	var worse := false
+	for vi in 2:
+		for ax in 3:
+			worse = worse or float(out.ms[vi][ax]) > float(ref.ms[vi][ax]) + MS_TOL or float(out.pm[vi][ax]) < float(ref.pm[vi][ax]) - PM_TOL
 	if not is_finite(float(out.cost)):
 		out.ok = false
 		out.why = "diverged"
 	elif float(out.sat) > float(ref.sat) + SAT_SLACK:
 		out.ok = false
 		out.why = "saturation"
-	elif ring_p > maxf(RING_SLACK * float(ref.ring_p), RING_FLOOR):
+	elif worse:
 		out.ok = false
-		out.why = "robustness"
-	elif float(out.overshoot) > maxf(float(ref.overshoot), MAX_OVERSHOOT):
+		out.why = "margin"
+	elif float(out.overshoot) > maxf(float(ref.overshoot), MAX_OVERSHOOT) or float(out.overshoot_replay) > maxf(float(ref.overshoot_replay), MAX_OVERSHOOT):
 		out.ok = false
 		out.why = "overshoot"
 	return out
@@ -371,7 +457,9 @@ func evaluate(sims: Array, cfg: Dictionary, progs: Array, ref: Dictionary) -> Di
 static func _worker(sim: Dictionary, cfg: Dictionary, tasks: Array, first: int, nth: int, res: Array) -> void:
 	for i in range(first, tasks.size(), nth):
 		var t: Dictionary = tasks[i]
-		if t.variant == "air":
+		if t.has("chirp"):
+			res[i] = margins(sim[t.variant], cfg, t.chirp)
+		elif t.variant == "air":
 			var s = sim.pw
 			s.model.fc_cfg = cfg
 			s.seed_n = int(t.seed)
@@ -417,6 +505,7 @@ func run(craft: Dictionary, fc: Dictionary, plant: Dictionary, logs: Array, cls:
 			for k in knobs:
 				var v := get_v(best, k)
 				var b := bounds(cls, fc, k)
+				var lim := limits(cls, fc, k)
 				var moved := false
 				for dir in [1.0, -1.0]:
 					var wk := "%s %s" % [label(k), "up" if dir > 0.0 else "down"]     # what stopped the move
@@ -426,9 +515,10 @@ func run(craft: Dictionary, fc: Dictionary, plant: Dictionary, logs: Array, cls:
 					if moved or cancel_flag:
 						continue
 					var nv: float = v * (1.0 + dir * float(step)) if st[2] else v + dir * float(step) * float(STEPS2[k[0]])
-					nv = clampf(roundf(nv), b[0], b[1])
+					nv = clampf(roundf(nv), lim[0], lim[1])
+					var edge := "trust region" if (lim[1] < b[1] if dir > 0.0 else lim[0] > b[0]) else "class bound"
 					if nv == v:
-						why[wk] = "class bound"
+						why[wk] = edge
 						continue
 					var cand: Dictionary = best.duplicate(true)
 					set_v(cand, k, nv)
@@ -442,12 +532,12 @@ func run(craft: Dictionary, fc: Dictionary, plant: Dictionary, logs: Array, cls:
 					if cancel_flag:
 						break
 					if not e.ok:
-						why[wk] = {"saturation": "motor saturation", "robustness": "ringing on the perturbed plant", "overshoot": "overshoot"}.get(e.why, e.why)
+						why[wk] = {"saturation": "motor saturation", "margin": "stability margin", "overshoot": "overshoot"}.get(e.why, e.why)
 					elif float(e.cost) < float(best_e.cost) - MIN_GAIN:
 						best = cand
 						best_e = e
 						moved = true
-						why[wk] = "its last step still gained"
+						why[wk] = edge + " (reached)" if nv == float(lim[1] if dir > 0.0 else lim[0]) else "still gaining when the search ended"
 					else:
 						why[wk] = "no better flight"
 				if cancel_flag:
@@ -485,7 +575,7 @@ func _sims(craft: Dictionary, fc: Dictionary, plant: Dictionary) -> Array:
 			var m := BFModel.new(dirs[v])
 			if not m.valid:
 				return []
-			m.quad.turbulence_enabled = false       # (clean, still air: the ringing is the loop's own)
+			m.quad.turbulence_enabled = false       # (clean, still air: the margins are the loop's own)
 			var s := Calibrate.Sim.new(m, null, 1)
 			s.cal = self
 			w["nominal" if v == 0 else "perturbed"] = s
@@ -562,14 +652,25 @@ static func report_md(name: String, flown: Dictionary, tuned: Dictionary, rec: D
 	L.append("| Hover roll step: time to 90 %% (ms) | %.0f | %.0f | |" % [1000.0 * float(f.get("t90", -1)), 1000.0 * float(t.get("t90", -1))])
 	L.append("| Hover roll and pitch steps: overshoot (%%) | %.0f | %.0f | at most %.0f |" % [100.0 * float(f.get("overshoot", 0)), 100.0 * float(t.get("overshoot", 0)),
 		100.0 * maxf(float(f.get("overshoot", 0)), MAX_OVERSHOOT)])
-	L.append("| Out of motor authority (%% of the time) | %.2f | %.2f | at most +%.1f |" % [100.0 * float(f.sat), 100.0 * float(t.sat), 100.0 * SAT_SLACK])
-	L.append("| Ringing, plant with %d %% inertia and %d %% motor delay (deg/s) | %.2f | %.2f | at most %.2f |" % [
-		roundi(100 * PERTURB_INERTIA), roundi(100 * PERTURB_DELAY), f.ring_p, t.ring_p, maxf(RING_SLACK * float(f.ring_p), RING_FLOOR)])
+	L.append("| Your stick replay: overshoot at the stick stops (%%) | %.0f | %.0f | at most %.0f |" % [100.0 * float(f.overshoot_replay), 100.0 * float(t.overshoot_replay),
+		100.0 * maxf(float(f.overshoot_replay), MAX_OVERSHOOT)])
+	L.append("| Out of motor authority (%% of the time) | %.2f | %.2f | at most %.2f |" % [100.0 * float(f.sat), 100.0 * float(t.sat), 100.0 * (float(f.sat) + SAT_SLACK)])
+	var trio := func(x: Array, fmt: String) -> String: return " / ".join(x.map(func(y): return fmt % float(y)))
+	for vi in 2:
+		var plant_s: String = ["identified plant", "plant with %d %% inertia and %d %% motor delay" % [roundi(100 * PERTURB_INERTIA), roundi(100 * PERTURB_DELAY)]][vi]
+		L.append("| Peak sensitivity Ms roll / pitch / yaw, %s | %s | %s | at most as flown + %.2f |" % [plant_s, trio.call(f.ms[vi], "%.2f"), trio.call(t.ms[vi], "%.2f"), MS_TOL])
+		L.append("| Phase margin roll / pitch / yaw (deg), %s | %s | %s | at least as flown - %.1f |" % [plant_s, trio.call(f.pm[vi], "%.1f"), trio.call(t.pm[vi], "%.1f"), PM_TOL])
 	L.append_array(["", "## How", "",
 		"- Flights: %s." % ", ".join(rec.flights) + ("" if rec.propwash else " No prop wash flight: dirty_air is not installed."),
-		"- Search: staged coordinate search from the flown tune (P, D, D-max, feedforward, I per axis; then TPA, dynamic idle, anti-gravity, thrust linear), %d evaluations, %.0f s." % [rec.evals, rec.runtime_s],
-		"- Bounds: the %s class's (P, I, feedforward around Betaflight's defaults; highest D at most %.2f x the default D-max with the RPM filter; D/P band), widened to the flown values." % [rec["class"], float(Classes.TUNE[rec["class"]].d_max)],
-		"- Constraints: no more time out of motor authority than the flown tune; no more ringing than the flown tune on a plant with less inertia and more motor delay (the identification's error); hover steps overshoot at most %.0f %% (or as flown)." % (100.0 * MAX_OVERSHOOT),
+		"- Cost: the mean over the flight groups of the tuned tune's tracking error / the flown tune's.",
+		"- Search: coordinate search from the flown tune, each setting tried up, then (if up was not kept) down; a move is kept when it lowers the cost by more than %.3f. Stage 1: P, D, D-max, feedforward, I per axis (yaw without D; D-max kept at least D), steps of %s %%. Stage 2: TPA rate, TPA breakpoint, dynamic idle (with the RPM filter only), anti-gravity, thrust linear, steps of %s, then half. %d evaluations, %.0f s." % [MIN_GAIN,
+			", ".join(STEPS1.map(func(x): return "%d" % roundi(100 * x))), ", ".join(STAGE2.map(func(k): return "%d" % int(STEPS2[k[0]]))), rec.evals, rec.runtime_s],
+		"- Limits: every setting at most %d %% from its flown value (rounded inward), and inside the %s class's bounds (P, I, feedforward around Betaflight's defaults; highest D at most %.2f x the default D-max with the RPM filter, 1.0 x without; D/P band), widened to the flown values." % [roundi(100 * TRUST), rec["class"], float(Classes.TUNE[rec["class"]].d_max)],
+		"- Constraints, a candidate is not taken when: its share of time out of motor authority (motor mix range above 1), the mean over the stick flights, is more than the flown tune's + %.1f percentage points; on the identified plant or on the one with %d %% inertia and %d %% motor delay, any axis's peak sensitivity Ms is more than %.2f above or its phase margin more than %.1f deg below the flown tune's (the estimate's resolution); or the overshoot of the hover roll and pitch steps, or at the stick stops of your replay (any axis; a setpoint change of %d deg/s or more in 0.1 s, then held within 10 %% of it for 50 ms; the rate's peak past the setpoint in the 0.1 s after, of the change), is more than %d %% or the flown tune's, whichever is higher." % [
+			100.0 * SAT_SLACK, roundi(100 * PERTURB_INERTIA), roundi(100 * PERTURB_DELAY), MS_TOL, PM_TOL, roundi(STOP_DPS), roundi(100 * MAX_OVERSHOOT)],
+		"- Ms and phase margin: at hover, a chirp of +-%d (PID sum units, %d-%d Hz in %.0f s) added to one axis's PID sum; S = 1/(1+L) from it and the PID sum the mixer gets, in bands of +-2.5 %% from %d to %d Hz; Ms the largest |S|, the phase margin at the first band with |L| below 1." % [
+			roundi(CHIRP_AMP), roundi(CHIRP_HZ[0]), roundi(CHIRP_HZ[1]), CHIRP_S, roundi(MARGIN_HZ[0]), roundi(MARGIN_HZ[1])],
+		"- Stopped by: \"still gaining when the search ended\" means its last step was kept: the search's step budget, not the flight, stopped it.",
 		"", "## Not modelled", "",
 		"- Gyro noise, motor heat and D-term noise: a real quad with this much D may run hot; the class's D bound stands in for them.",
 		"- Frame resonances, bent props, the receiver link's jitter; the filters are not tuned.",

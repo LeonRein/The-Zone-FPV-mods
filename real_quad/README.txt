@@ -168,11 +168,13 @@ MODELS... (THE MODEL MANAGER)
   full throttle, flips, a drop and catch through dirty_air's air - and
   searches its Betaflight settings (P, I, D, D-max, feedforward per axis,
   then TPA, dynamic idle, anti-gravity, thrust linear) for the smallest
-  tracking error, within bounds for its class (D at most 1.5 x
-  Betaflight's default D-max with the RPM filter: the sim has no gyro noise
-  or motor heat) and without more motor saturation, overshoot or ringing on
-  a plant with less inertia and more motor delay than the flown tune. The
-  filters stay as flown. The result stays in the model (fc_optimized.json,
+  tracking error, each setting at most 20 % from the flown one and within
+  bounds for its class (D at most 1.5 x Betaflight's default D-max with the
+  RPM filter: the sim has no gyro noise or motor heat), without more motor
+  saturation or overshoot (stick steps, your sticks' stops) and without less
+  stability margin (peak sensitivity and phase margin per axis from a chirp
+  at hover, on the identified plant and on one with less inertia and more
+  motor delay) than the flown tune. The filters stay as flown. The result stays in the model (fc_optimized.json,
   and tune.md: flown and optimized per setting, what stopped each, the
   predicted changes, what is not modelled; the model's page shows it above
   the report); a drone flies it when its tune setting is "optimized" (see

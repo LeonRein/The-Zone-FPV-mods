@@ -5,12 +5,12 @@
  "pid_process_denom": 1.0,
  "pid": {
   "roll": [
-   59,
+   42.0,
    63.0,
-   39
+   33.0
   ],
   "pitch": [
-   72,
+   49.0,
    71.0,
    44.0
   ],
@@ -21,12 +21,12 @@
   ]
  },
  "ff_weight": [
-  169,
-  206,
+  162,
+  185,
   160.0
  ],
  "d_max": [
-  39,
+  33.0,
   44.0,
   0.0
  ],
@@ -80,11 +80,11 @@
  "iterm_windup": 80.0,
  "pidsum_limit": 500.0,
  "pidsum_limit_yaw": 400.0,
- "anti_gravity_gain": 110.0,
+ "anti_gravity_gain": 90,
  "anti_gravity_cutoff_hz": 5.0,
  "anti_gravity_p_gain": 100.0,
  "tpa_mode": 0.0,
- "tpa_rate": 35,
+ "tpa_rate": 40,
  "tpa_breakpoint": 1450,
  "tpa_low_rate": 20.0,
  "tpa_low_breakpoint": 1050.0,
@@ -151,7 +151,7 @@
  "_tune": {
   "fc_sha256": "529d1d1e07ea76d541cb09bfe1d8d54dc7ea23db6a5a16a7399f551eedf66707",
   "plant_sha256": "00b185c0a686a918714bf8275ee4bf7e48dab472f92ac5b0c113aea98d7fa972",
-  "created": "2026-10-16T13:35:14",
+  "created": "2026-10-16T16:18:49+00:00",
   "record": {
    "class": "mini",
    "flown": {
@@ -181,8 +181,8 @@
       "err": 9.994529494897433
      },
      {
-      "name": "replay LOG00003#1 38 s",
-      "err": 15.909124619263762
+      "name": "replay mini_03_freestyle#1 166 s",
+      "err": 8.511439460977185
      },
      {
       "name": "propwash seed 1",
@@ -195,110 +195,157 @@
     ],
     "ok": true,
     "why": "",
+    "overshoot_replay": 0.05182237546112572,
+    "ms": [
+     [
+      1.8200314247186247,
+      1.7898091206671014,
+      1.6097509526463707
+     ],
+     [
+      2.5492874550768008,
+      2.4777239576768295,
+      2.0682209514688283
+     ]
+    ],
+    "pm": [
+     [
+      46.23040544416983,
+      47.7195013279179,
+      54.416979927213944
+     ],
+     [
+      31.71822703747094,
+      35.18153411708232,
+      41.56505537738542
+     ]
+    ],
     "t90": 0.036,
     "overshoot": 0.021472133244541336,
-    "ring": 2.9027430095900124,
     "groups": {
      "steps": 16.073491760450114,
      "flip": 76.85358338719327,
-     "replay": 11.74261255194179,
+     "replay": 9.276717499179597,
      "propwash": 14.617591550756778
     },
-    "sat": 0.01156122448979592,
-    "ring_p": 2.7464355354595793,
+    "sat": 0.010846938775510203,
     "cost": 1.0
    },
    "tuned": {
     "flights": [
      {
       "name": "steps_hover",
-      "err": 11.250387386286388
+      "err": 11.562367613222925
      },
      {
       "name": "steps_idle",
-      "err": 21.420123170577888
+      "err": 22.65408303013902
      },
      {
       "name": "steps_punch",
-      "err": 11.120260017625148
+      "err": 12.504786802804581
      },
      {
       "name": "flip",
-      "err": 74.06910656940386
+      "err": 77.22741241549177
      },
      {
       "name": "replay LOG00003#1 32 s",
-      "err": 6.971121973991387
+      "err": 8.146468735745307
      },
      {
       "name": "replay LOG00003#1 44 s",
-      "err": 6.3364135820840755
+      "err": 8.063395656894915
      },
      {
-      "name": "replay LOG00003#1 38 s",
-      "err": 12.478476180653677
+      "name": "replay mini_03_freestyle#1 166 s",
+      "err": 7.03312423694217
      },
      {
       "name": "propwash seed 1",
-      "err": 13.818729782349386
+      "err": 14.7761971343979
      },
      {
       "name": "propwash seed 2",
-      "err": 13.178500587129138
+      "err": 12.92833466767033
      }
     ],
     "ok": true,
     "why": "",
-    "t90": 0.016,
-    "overshoot": 0.005592316396269892,
-    "ring": 2.8739855777975998,
+    "overshoot_replay": 0.04836548872388327,
+    "ms": [
+     [
+      1.8200955649413624,
+      1.7895936073751995,
+      1.6097507005496314
+     ],
+     [
+      2.5493701069241563,
+      2.47772255466599,
+      2.068216237582673
+     ]
+    ],
+    "pm": [
+     [
+      46.23229230059647,
+      47.719932572840946,
+      54.415959947375356
+     ],
+     [
+      31.718865975074777,
+      35.179962629214884,
+      41.56413003078191
+     ]
+    ],
+    "t90": 0.018,
+    "overshoot": 0.021815184899476092,
     "groups": {
-     "steps": 14.596923524829807,
-     "flip": 74.06910656940386,
-     "replay": 8.59533724557638,
-     "propwash": 13.498615184739261
+     "steps": 15.573745815388842,
+     "flip": 77.22741241549177,
+     "replay": 7.747662876527464,
+     "propwash": 13.852265901034116
     },
-    "sat": 0.013879251700680273,
-    "ring_p": 2.7131860830789725,
-    "cost": 0.881833449087021
+    "sat": 0.01063265306122449,
+    "cost": 0.9391473149529049
    },
    "why": {
-    "Roll P up": "no better flight",
-    "Roll D up": "its last step still gained",
-    "Roll D down": "no better flight",
+    "Roll P up": "stability margin",
+    "Roll P down": "no better flight",
+    "Roll D up": "stability margin",
+    "Roll D down": "stability margin",
     "Roll D-max up": "no better flight",
     "Roll D-max down": "no better flight",
-    "Roll Feedforward up": "no better flight",
+    "Roll Feedforward up": "trust region",
     "Roll I up": "no better flight",
     "Roll I down": "no better flight",
-    "Pitch P up": "its last step still gained",
-    "Pitch D up": "no better flight",
+    "Pitch P up": "stability margin",
+    "Pitch P down": "no better flight",
+    "Pitch D up": "stability margin",
     "Pitch D down": "no better flight",
     "Pitch D-max up": "no better flight",
     "Pitch D-max down": "no better flight",
-    "Pitch Feedforward up": "no better flight",
+    "Pitch Feedforward up": "overshoot",
+    "Pitch Feedforward down": "no better flight",
     "Pitch I up": "no better flight",
     "Pitch I down": "no better flight",
-    "Yaw P up": "no better flight",
+    "Yaw P up": "stability margin",
     "Yaw P down": "no better flight",
     "Yaw Feedforward up": "no better flight",
     "Yaw Feedforward down": "no better flight",
-    "Yaw I up": "no better flight",
+    "Yaw I up": "stability margin",
     "Yaw I down": "no better flight",
     "Roll Feedforward down": "no better flight",
-    "Pitch Feedforward down": "no better flight",
-    "Roll P down": "no better flight",
     "TPA rate (%) up": "no better flight",
-    "TPA rate (%) down": "its last step still gained",
+    "TPA rate (%) down": "trust region",
     "TPA breakpoint up": "no better flight",
-    "Dynamic idle (x100 rpm) up": "its last step still gained",
+    "Dynamic idle (x100 rpm) up": "trust region (reached)",
     "Anti-gravity gain up": "no better flight",
     "Anti-gravity gain down": "no better flight",
     "Thrust linear (%) up": "class bound",
     "Thrust linear (%) down": "no better flight",
     "TPA breakpoint down": "no better flight"
    },
-   "evals": 85,
+   "evals": 89,
    "flights": [
     "steps_hover",
     "steps_idle",
@@ -306,9 +353,9 @@
     "flip",
     "replay LOG00003#1 32 s",
     "replay LOG00003#1 44 s",
-    "replay LOG00003#1 38 s"
+    "replay mini_03_freestyle#1 166 s"
    ],
-   "runtime_s": 148.5,
+   "runtime_s": 210.5,
    "hover_throttle": -0.37192433574904044,
    "propwash": true
   }
