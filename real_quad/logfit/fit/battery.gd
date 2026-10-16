@@ -17,7 +17,7 @@ static func _proxy(r: Dictionary, i: int, v: float, kv_rad: float) -> float:
 
 
 ## {source, V0_per_log, V0, drain, R, rms, I_range} or null with fewer than 10 points.
-static func fit(rows: Array, logs: Array, P: Array, V: Dictionary, kv_rad: float, decim_s: float = 0.1) -> Variant:
+static func fit(rows: Array, logs: Array, P: Array, V: Dictionary, kv_rad: float, decim_s: float = 0.1, cancel: Callable = Callable()) -> Variant:
 	var vb_rows: Array = rows.filter(func(r): return not (r.vbat as PackedFloat64Array).is_empty())
 	var src := "vbat" if not vb_rows.is_empty() else "motor-windows"
 	var sel: Array = vb_rows if not vb_rows.is_empty() else rows
@@ -49,6 +49,8 @@ static func fit(rows: Array, logs: Array, P: Array, V: Dictionary, kv_rad: float
 			var step := maxi(1, int(decim_s / Num.median(dts)))
 			var ok: PackedByteArray = r.ok
 			for i in range(0, ok.size(), step):
+				if Num.stop(cancel, i):
+					return null
 				if ok[i] != 0:
 					add_row.call(j, t[i] - ts, _proxy(r, i, vm[i], kv_rad), vm[i])
 		else:
@@ -62,6 +64,8 @@ static func fit(rows: Array, logs: Array, P: Array, V: Dictionary, kv_rad: float
 				var v: float = V[key]
 				var ps := PackedFloat64Array()
 				for i in ok.size():
+					if Num.stop(cancel, i):
+						return null
 					if ok[i] != 0 and win[i] == k:
 						ps.append(_proxy(r, i, v, kv_rad))
 				if ps.size() < 500:

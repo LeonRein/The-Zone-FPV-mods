@@ -178,6 +178,21 @@ static func craft_from_form(form: Dictionary) -> Dictionary:
 	return c
 
 
+## Moves tmp over dst. A rename over an existing file removes it first on Windows, so a failure would lose it: the
+## old one is moved to dst.bak first and comes back if the new one cannot be put in place. False (tmp removed) on failure.
+static func replace_file(tmp: String, dst: String) -> bool:
+	var bak := dst + ".bak"
+	DirAccess.remove_absolute(bak)
+	var had := FileAccess.file_exists(dst)
+	if (had and DirAccess.rename_absolute(dst, bak) != OK) or DirAccess.rename_absolute(tmp, dst) != OK:
+		if had and not FileAccess.file_exists(dst):
+			DirAccess.rename_absolute(bak, dst)
+		DirAccess.remove_absolute(tmp)
+		return false
+	DirAccess.remove_absolute(bak)
+	return true
+
+
 ## Only the prop wash calibration of the package in dir (its logfit.json's log metric, the installed
 ## dirty_air): plant.json gets the new values and record, report.md its new calibration lines.
 ## progress.call(step_name, fraction). {ok, text, errors: [message]}
@@ -214,13 +229,15 @@ func recalibrate(dir: String, progress: Callable = Callable()) -> Dictionary:
 	if cancelled:
 		return fail.call("Cancelled.")
 	Calibrate.apply(plant, rec)
+	var bad := Build.nonfinite(plant, "plant.json")
+	if bad != "":
+		return fail.call("The calibration produced a value that is not a finite number (%s): plant.json is unchanged." % bad)
 	var tmp := dir.path_join("plant.json.new")
 	var werr := Build._write_text(tmp, JSON.stringify(plant, " ", false, true) + "\n")
 	if werr != "":
 		DirAccess.remove_absolute(tmp)
 		return fail.call("Cannot write plant.json: %s." % werr)
-	if DirAccess.rename_absolute(tmp, dir.path_join("plant.json")) != OK:
-		DirAccess.remove_absolute(tmp)
+	if not replace_file(tmp, dir.path_join("plant.json")):
 		return fail.call("Cannot replace plant.json in %s." % dir)
 	var md := FileAccess.get_file_as_string(dir.path_join("report.md"))
 	if md != "":

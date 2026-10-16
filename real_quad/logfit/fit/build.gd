@@ -171,20 +171,24 @@ static func file_errors(files: Array) -> Array:
 	return errs
 
 
+## Why a file could not be opened: "permission denied", "file not found" or "read error" (call right after the failed open).
+static func open_why(p: String) -> String:
+	var oe := FileAccess.get_open_error()
+	# (Godot reports a denied open of an existing file as ERR_FILE_CANT_OPEN on Linux)
+	if oe == ERR_FILE_NOT_FOUND or not FileAccess.file_exists(p):
+		return "file not found"
+	if oe == ERR_FILE_NO_PERMISSION or oe == ERR_FILE_CANT_OPEN:
+		return "permission denied"
+	return "read error"
+
+
 func _load_one(e: Dictionary) -> void:
 	var p: String = e.path
 	# readable at all (permissions, macOS privacy): before anything else
 	var fa := FileAccess.open(p, FileAccess.READ)
 	if fa == null:
-		var oe := FileAccess.get_open_error()
 		e.error = "unreadable"
-		# (Godot reports a denied open of an existing file as ERR_FILE_CANT_OPEN on Linux)
-		if oe == ERR_FILE_NOT_FOUND or not FileAccess.file_exists(p):
-			e.why = "file not found"
-		elif oe == ERR_FILE_NO_PERMISSION or oe == ERR_FILE_CANT_OPEN:
-			e.why = "permission denied"
-		else:
-			e.why = "read error"
+		e.why = open_why(p)
 		return
 	e.size = fa.get_length()
 	fa.close()
@@ -437,7 +441,9 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 	for x in LL:
 		if cancel_flag:
 			return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
-		segs.append(Segments.segment_log(x, erpm_limit))
+		segs.append(Segments.segment_log(x, erpm_limit, _cancelled))
+		if cancel_flag:
+			return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
 	var uses: Array = []
 	for k in LL.size():
 		uses.append(Segments.mask_from_windows(LL[k].t, segs[k].use))
@@ -516,13 +522,15 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 	# 4 hover / kT
 	_say("Hover and thrust", 0.6)
 	var model_v: Array = rows.map(func(r): return Motor.model_v(r, V))
-	var hv: Variant = Thrust.hover(LL, uses, mass, model_v)
+	var hv: Variant = Thrust.hover(LL, uses, mass, model_v, _cancelled)
+	if cancel_flag:
+		return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
 	if hv == null:
 		return _refuse([Checks.issue("min_hover", "error", "no hover found: at least 2 s of steady hover in one session are needed for the thrust coefficient",
 			"fly a 10 s hands-off hover in ANGLE")], rows_tbl)
 	var h: Dictionary = hv
 	var kT: float = h.kT
-	var steady := Thrust.steady_estimate(LL, uses)
+	var steady := Thrust.steady_estimate(LL, uses, _cancelled)
 	rep.hover(h, steady)
 	rep.motor_free_run(rd[2], h.hz)
 	if rep.hover_spread > 0.06:
@@ -556,6 +564,10 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 	if not fit.has("yaw"):          # no yaw excitation at all (or no data): J_rotor and the direction from the defaults
 		fit.yaw = Rotation.no_fit()
 	var dflt := Craft.defaults(c, kT)
+	var bad_inertia := Rotation.inertia_problem(fit, kT, geo.arm, dflt.Ixx)
+	if bad_inertia != "":
+		return _refuse([Checks.issue("min_rotation", "error", "rotation fit failed: " + bad_inertia,
+			"add logs with more flying (chirp sweeps recommended); check weight and prop size in the form")], rows_tbl)
 	var rev_hdr := src.hint("yaw_motors_reversed", -1)      # (not in today's headers: then fc_config's default, props out)
 	var rev_default: bool = bool(rev_hdr) if rev_hdr == 0 or rev_hdr == 1 else bool(cfg.yaw_motors_reversed)
 	var tp := Rotation.to_params(fit, kT, geo.arm, Craft.REFERENCE.Izz_over_Ixy, use_chirp, dflt.J_rotor, rev_default,
@@ -579,13 +591,17 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 
 	# 6 bias
 	_say("Trim", 0.7)
-	var b: Variant = Bias.fit(LL, uses, geo.arm, kT, kQ, s0)
+	var b: Variant = Bias.fit(LL, uses, geo.arm, kT, kQ, s0, _cancelled)
+	if cancel_flag:
+		return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
 	rep.bias(b, geo.arm)
 	steps["06_bias"] = {"bias": b}
 
 	# 7 battery
 	_say("Battery", 0.72)
-	var bat_raw: Variant = Battery.fit(rows, LL, P, V, kv_rad)
+	var bat_raw: Variant = Battery.fit(rows, LL, P, V, kv_rad, 0.1, _cancelled)
+	if cancel_flag:
+		return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
 	var bat: Dictionary
 	if bat_raw == null or not (0.0 <= float(bat_raw.R) and float(bat_raw.R) < 1.0):
 		rep.default("Battery sag", "R = %s" % str(dflt.battery_r), "fit not possible (fewer than 10 points or R outside 0-1)")
@@ -660,7 +676,9 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 
 	# 9 propwash
 	_say("Propwash metric", 0.85)
-	var pw := Propwash.log_metric(LL, uses, h.throttle)
+	var pw := Propwash.log_metric(LL, uses, h.throttle, _cancelled)
+	if cancel_flag:
+		return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
 	rep.propwash(pw, p, dflt)
 	steps["09_propwash"] = pw
 
@@ -806,6 +824,10 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 		# the last chance to cancel: from here on the package is written and the answer is ok
 		if cancel_flag:
 			return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
+		var bad := nonfinite({"craft.json": pkg_craft, "fc.json": cfg, "plant.json": p, "logfit.json": lf})
+		if bad != "":
+			return _refuse([Checks.issue("nonfinite_value", "error", "the fit produced a value that is not a finite number (%s): the package would be unusable" % bad,
+				"use other logs; if the logs are fine this is a bug in the fit, please report it")], rows_tbl)
 		var werr := _write_package(out_dir, {"craft.json": pkg_craft, "fc.json": cfg, "plant.json": p, "logfit.json": lf}, md, _cancelled)
 		if werr == "cancelled":
 			return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
@@ -867,6 +889,19 @@ static func _structural_peak(logs: Array, uses: Array) -> Variant:
 	if best >= 0 and acc[best] > 10.0 * Num.median(band):
 		return freqs[best]
 	return null
+
+
+## The path of the first NaN / inf in nested dictionaries and arrays ("plant.json/Ixx"), else "" (JSON cannot hold them:
+## Godot writes NaN as null and inf as 1e99999).
+static func nonfinite(v: Variant, path: String = "") -> String:
+	if v is float:
+		return path if is_nan(v) or is_inf(v) else ""
+	var keys: Array = v.keys() if v is Dictionary else range(v.size()) if v is Array else []
+	for k in keys:
+		var bad := nonfinite(v[k], "%s/%s" % [path, k] if path != "" else str(k))
+		if bad != "":
+			return bad
+	return ""
 
 
 ## Writes the package into a temporary folder next to out_dir, then swaps it in: an old package is renamed

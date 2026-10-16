@@ -10,6 +10,7 @@ extends RefCounted
 
 const Num := preload("num.gd")
 const Flight := preload("flight.gd")
+const Report := preload("report.gd")
 
 const D2R := PI / 180.0
 const AX := ["roll", "pitch", "yaw"]
@@ -296,6 +297,23 @@ static func fit_all(logs: Array, sims: Array, b: PackedFloat64Array, uses: Array
 ## The yaw fit is good enough for J_rotor and the motor direction: R2 >= 0.5 and jackknife rel. SE <= 25 %.
 static func yaw_measured(fy: Dictionary) -> bool:
 	return float(fy.r2) >= YAW_MIN_R2 and fy.se != null and float(fy.se) <= YAW_MAX_SE and float(fy.coef[0]) != 0.0
+
+
+## Roll/pitch inertia / class inertia outside this: refused (the class band, Classes.BANDS.I, only warns).
+const INERTIA_HARD := [0.1, 10.0]
+
+
+## "" if the roll and pitch gains give a physical inertia, else why not: a gain that is not finite and positive
+## (negative / infinite inertia) or an inertia more than a factor 10 from the class inertia i0 (the fit is garbage).
+static func inertia_problem(fit: Dictionary, kT: float, arm: float, i0: float) -> String:
+	for ax in AX.slice(0, 2):
+		var g := float(fit[ax].coef[0])
+		if is_nan(g) or is_inf(g) or g <= 0.0:
+			return "%s gain %s is not positive: the %s inertia would not be physical" % [ax, Report.fmt_g(g, 3), ax]
+		var r := kT * arm / (g * 1e-6) / i0
+		if not (INERTIA_HARD[0] <= r and r <= INERTIA_HARD[1]):
+			return "%s inertia is %s times the class inertia (plausible: %s to %s)" % [ax, Report.fmt_g(r, 2), Report.fmt_g(INERTIA_HARD[0], 3), Report.fmt_g(INERTIA_HARD[1], 3)]
+	return ""
 
 
 ## IV coefficients -> plant parameters: [params {Ixx, Iyy, Izz, J_rotor, rate_damping}, yaw_reversed, yaw_ok].

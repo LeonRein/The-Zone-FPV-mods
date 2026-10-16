@@ -30,6 +30,7 @@ const BAD := Color(1.0, 0.45, 0.4)
 const GROUP := Color(0.75, 0.85, 1.0)
 const _MM := preload("model_manager.gd")
 const LOGFIT := "res://real_quad/logfit/logfit.gd"
+const BUILD := "res://real_quad/logfit/fit/build.gd"
 const CFG := "user://real_quad/logfit.cfg"
 const EXTS := ["bbl", "bfl", "txt"]
 const TYPING := "zm_typing"
@@ -84,6 +85,7 @@ var detail_id := ""
 var detail := {}                      # manager.details(detail_id)
 var pend_add := PackedStringArray()   # logs to add to the model in the detail page
 var skipped := PackedStringArray()    # picked files that are not blackbox logs (left out, named once)
+var unreadable := PackedStringArray()  # picked files that cannot be read (the error texts, named once)
 var pend_rm := {}                     # stored log name -> true: to remove
 
 var _logfit = null
@@ -784,18 +786,35 @@ func _remember_dir(picked: PackedStringArray) -> void:
 	c.save(cfg_path)
 
 
-## True for a Betaflight blackbox log: its first header line is in the first kilobytes (a .txt
-## next to the logs may be a CLI dump or notes, which is left out instead of failing the build)
-static func is_blackbox_log(path: String) -> bool:
+## "log" for a Betaflight blackbox log (its first header line is in the first kilobytes: a .txt next to the
+## logs may be a CLI dump or notes, which is left out instead of failing the build), "other" for a readable
+## file that is none, else the text of the error for a file that cannot be read (permissions, macOS privacy).
+static func log_kind(path: String) -> String:
 	var f := FileAccess.open(path, FileAccess.READ)
 	if f == null:
-		return false
+		var B = load(BUILD)
+		return B.unreadable_issue(path.get_file(), B.open_why(path)).message
 	var head := f.get_buffer(mini(f.get_length(), 16384)).get_string_from_ascii()
-	return head.contains("H Product:Blackbox flight data recorder")
+	return "log" if head.contains("H Product:Blackbox flight data recorder") else "other"
+
+
+## Sorts a picked file after log_kind(): into the logs it is (true) or into skipped / unreadable (false).
+func _is_log(p: String) -> bool:
+	var k := log_kind(p)
+	if k == "other":
+		skipped.append(p.get_file())
+	elif k != "log":
+		unreadable.append(k)
+	return k == "log"
 
 
 func _skipped_note() -> Control:
-	return _label("Not blackbox logs, left out: %s" % ", ".join(skipped), 1.0, WARN)
+	var box := VBoxContainer.new()
+	if not skipped.is_empty():
+		box.add_child(_label("Not blackbox logs, left out: %s" % ", ".join(skipped), 1.0, WARN))
+	for u in unreadable:
+		box.add_child(_label(u, 1.0, BAD))
+	return box
 
 
 ## A log's name in a list: its file name, with its folder when another file in the list has the
@@ -815,10 +834,10 @@ static func same_file(a: String, b: String) -> bool:
 func add_files(picked: PackedStringArray) -> void:
 	var added := false
 	skipped = PackedStringArray()
+	unreadable = PackedStringArray()
 	for p in picked:
 		if p.get_extension().to_lower() in EXTS and not p in paths:
-			if not is_blackbox_log(p):
-				skipped.append(p.get_file())
+			if not _is_log(p):
 				continue
 			paths.append(p)
 			added = true
@@ -1053,7 +1072,7 @@ func _refresh() -> void:
 		_fill_drones()
 	_clear(_files_box)
 	_clear(_msgs)
-	if not skipped.is_empty():
+	if not skipped.is_empty() or not unreadable.is_empty():
 		_msgs.add_child(_skipped_note())
 	if not available():
 		_msgs.add_child(_label("The model builder is not installed completely: real_quad/logfit/logfit.gd is missing. Update the mod.", 1.0, BAD))
@@ -1332,6 +1351,7 @@ func _build_detail(page: VBoxContainer) -> void:
 	_d_hint = _label("", 0.9)
 	_d_hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_d_foot.add_child(_d_hint)
+	_d_foot.add_child(_btn("Recalibrate", "  Recalibrate prop wash  ", recalibrate, "Runs only the prop wash calibration again (the installed dirty_air changed); the rest of the model stays"))
 	_d_foot.add_child(_btn("SaveMeta", "  Save name and drone  ", save_meta, "Writes the name and the Zone drone into the model; no rebuild"))
 	_d_foot.add_child(_btn("Rebuild", "  Rebuild the model  ", rebuild, "Builds the model again from its logs and these parameters; the old one flies until the new one is ready"))
 
@@ -1593,7 +1613,7 @@ func _fill_logs() -> void:
 		return
 	var stored: Array = (d.logs as Array).filter(func(l): return bool(l.stored))
 	_d_logs.add_child(_note("The logs are kept in the model's folder (logs/), so it can be rebuilt without the originals. Add or remove logs, then rebuild. Identical files are kept once."))
-	if not skipped.is_empty():
+	if not skipped.is_empty() or not unreadable.is_empty():
 		_d_logs.add_child(_skipped_note())
 	if not bool(d.inputs_known) or (stored.is_empty() and not (d.logs as Array).is_empty()):
 		var names := ", ".join(PackedStringArray((d.logs as Array).map(func(l): return str(l.name))))
@@ -1656,10 +1676,10 @@ func drop_added(p: String) -> void:
 ## Logs to add to the model in the detail page
 func add_detail_logs(picked: PackedStringArray) -> void:
 	skipped = PackedStringArray()
+	unreadable = PackedStringArray()
 	for p in picked:
 		if p.get_extension().to_lower() in EXTS and not p in pend_add:
-			if not is_blackbox_log(p):
-				skipped.append(p.get_file())
+			if not _is_log(p):
 				continue
 			pend_add.append(p)
 	_remember_dir(picked)
@@ -1739,6 +1759,9 @@ func _update_detail_buttons(v: Dictionary) -> void:
 	var reb := _d_foot.find_child("Rebuild", true, false) as Button
 	var why := _form_problem(v)
 	var busy_t := _busy_text()
+	var rc := _d_foot.find_child("Recalibrate", true, false) as Button
+	rc.visible = bool(detail.get("propwash", {}).get("recalibrate", false))
+	rc.disabled = busy_t != ""
 	save.visible = bool(st.meta) and not bool(st.rebuild)
 	save.disabled = why != "" or busy_t != ""
 	var reb_why := why
@@ -1761,6 +1784,18 @@ func rebuild() -> bool:
 		if bool(l.stored) and not pend_rm.has(str(l.name)):
 			keep.append(str(l.name))
 	var err: String = mm.start({"id": detail_id, "form": v["form"], "add": Array(pend_add), "keep": keep, "new": false})
+	if err != "":
+		_d_hint.text = err
+		return false
+	_go("overview")
+	return true
+
+
+## Runs only the prop wash calibration of the open model (a job like a build, shown on the overview)
+func recalibrate() -> bool:
+	if mm == null or detail_id == "":
+		return false
+	var err: String = mm.recalibrate(detail_id)
 	if err != "":
 		_d_hint.text = err
 		return false

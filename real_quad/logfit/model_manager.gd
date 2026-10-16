@@ -138,7 +138,8 @@ static func copy_dir(src: String, dst: String) -> bool:
 	return true
 
 
-static func copy_file(src: String, dst: String) -> bool:
+## job: stops a copy of a cancelled job (false). A read that returns nothing (card pulled, read error) ends the copy too.
+static func copy_file(src: String, dst: String, job: Job = null) -> bool:
 	var a := FileAccess.open(src, FileAccess.READ)
 	if a == null:
 		return false
@@ -147,7 +148,8 @@ static func copy_file(src: String, dst: String) -> bool:
 		return false
 	var ok := true
 	while ok and a.get_position() < a.get_length():
-		ok = b.store_buffer(a.get_buffer(4 * 1024 * 1024))
+		var buf := a.get_buffer(4 * 1024 * 1024)
+		ok = not buf.is_empty() and (job == null or not job.cancelled) and b.store_buffer(buf)
 	b.flush()
 	ok = ok and b.get_error() == OK
 	var want := a.get_length()
@@ -515,7 +517,7 @@ func recalibrate(id: String) -> String:
 	job.thread = Thread.new()
 	job.thread.start(func():
 		var r: Dictionary = job.logfit.recalibrate(dir, func(s: String, f: float): job.progress(s, f))
-		if job.cancelled:
+		if job.cancelled and not bool(r.get("ok", false)):
 			r["cancelled"] = true
 		job.mutex.lock()
 		job.result = r
@@ -574,7 +576,9 @@ func _run(job: Job, id: String, form: Dictionary, add: Array, keep: Array, old_l
 			nm = "%s_%s" % [sha.substr(0, 8), nm]
 		names[nm.to_lower()] = true
 		seen[sha] = nm
-		if not copy_file(src, stage.path_join(nm)):
+		if not copy_file(src, stage.path_join(nm), job):
+			if job.cancelled:
+				return fail.call("cancelled")
 			return fail.call("Cannot copy %s into the model's folder (disk full?)." % src.get_file())
 		entries.append({"name": nm, "size": size, "sha256": sha, "path": stage.path_join(nm), "staged": true})
 		job.progress("Copying the logs", 0.05 * float(i + 1) / maxi(add.size(), 1))
@@ -608,7 +612,9 @@ func _run(job: Job, id: String, form: Dictionary, add: Array, keep: Array, old_l
 		var target := logs_dir.path_join(e.name)
 		# a staged log is the copy this job made: it moves (the copy on disk is the only one needed); a kept one is copied
 		var moved: bool = e.staged and DirAccess.rename_absolute(e.path, target) == OK
-		if not moved and not copy_file(e.path, target):
+		if not moved and not copy_file(e.path, target, job):
+			if job.cancelled:
+				return fail.call("cancelled")
 			return fail.call("Cannot copy %s into the model's folder (disk full?)." % e.name)
 	var inputs := {"inputs_version": 1, "form": fform, "built": Time.get_datetime_string_from_system(true) + "+00:00",
 		"logs": entries.map(func(e): return {"name": e.name, "size": e.size, "sha256": e.sha256})}

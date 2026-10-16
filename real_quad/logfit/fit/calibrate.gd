@@ -24,6 +24,7 @@ extends RefCounted
 const BFModel := preload("../../flightmodel/bf_model.gd")
 const Quad := preload("../../flightmodel/bf_quad.gd")
 const Num := preload("num.gd")
+const Craft := preload("craft.gd")
 
 const AIR := "res://dirty_air/air.gd"
 const AIR_CFG := "res://dirty_air/zonemod.cfg"
@@ -140,6 +141,13 @@ func run(craft: Dictionary, fc: Dictionary, plant: Dictionary, metric: Dictionar
 	if tg.dropcatch == null and tg.calm == null:
 		rec.why = "the logs have neither calm hovers nor drops and catches"
 		return rec
+	# the search always starts from the class defaults (a build's plant has them, a recalibrated one its old values): same result
+	var dflt := Craft.defaults(craft)
+	plant = plant.duplicate()
+	plant.turb_base_ms = dflt.turb_base_ms
+	plant.dirty_air_gust = dflt.dirty_air.gust
+	rec.turb_base_ms = plant.turb_base_ms
+	rec.gust = plant.dirty_air_gust
 	var sims: Array = _sims(craft, fc, plant)
 	if sims.is_empty():
 		rec.why = "the model could not be loaded"
@@ -277,17 +285,19 @@ static func _trace(_s: String) -> void:
 func _sims(craft: Dictionary, fc: Dictionary, plant: Dictionary) -> Array:
 	var dir := OS.get_user_data_dir().path_join("real_quad/calibrate_tmp/%d_%d" % [OS.get_process_id(), Time.get_ticks_usec()])
 	DirAccess.make_dir_recursive_absolute(dir)
+	var out: Array = []
+	var ok := true
 	for pair in [["craft.json", craft], ["fc.json", fc], ["plant.json", plant]]:
 		var f := FileAccess.open(dir.path_join(pair[0]), FileAccess.WRITE)
-		if f == null:
-			return []
+		ok = f != null
+		if not ok:
+			break
 		f.store_string(JSON.stringify(pair[1]))
 		f.close()
-	var out: Array = []
-	for sd in range(1, n_seeds + 1):
+	for sd in (range(1, n_seeds + 1) if ok else []):
 		var m := BFModel.new(dir)
-		if not m.valid:
-			out = []
+		ok = m.valid
+		if not ok:
 			break
 		var sim := Sim.new(m, _air_script.new(), int(sd))
 		sim.cal = self
@@ -295,6 +305,10 @@ func _sims(craft: Dictionary, fc: Dictionary, plant: Dictionary) -> Array:
 	for f in DirAccess.get_files_at(dir):
 		DirAccess.remove_absolute(dir.path_join(f))
 	DirAccess.remove_absolute(dir)
+	if not ok:
+		for s in out:
+			s.dispose()
+		return []
 	return out
 
 

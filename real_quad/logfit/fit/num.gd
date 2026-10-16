@@ -21,6 +21,11 @@ const EPS := 2.220446049250313e-16
 # ------------------------------------------------------------------ masks --
 
 ## Runs of a mask: [a0, b0, a1, b1, ...], each run a..b-1.
+## True at every 10 000th i if cancel answers true: the poll of the long per-sample loops.
+static func stop(cancel: Callable, i: int) -> bool:
+	return i % 10000 == 0 and cancel.is_valid() and cancel.call()
+
+
 static func runs(mask: PackedByteArray) -> PackedInt32Array:
 	var out := PackedInt32Array()
 	var n := mask.size()
