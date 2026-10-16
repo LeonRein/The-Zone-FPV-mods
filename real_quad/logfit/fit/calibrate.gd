@@ -331,6 +331,7 @@ class Sim:
 	var st := State.new()
 	var dt := 1.0 / TICK_HZ
 	var hover_thr := -0.45
+	var pack_scale := 1.0            # the pack's rest voltage as a share of a full one (autotune's margin chirps)
 	var rc := {"roll": 0.0, "pitch": 0.0, "yaw": 0.0, "throttle": -1.0}
 	var sp := [PackedFloat64Array(), PackedFloat64Array()]
 	var gy := [PackedFloat64Array(), PackedFloat64Array()]
@@ -407,6 +408,7 @@ class Sim:
 		st.lin = Vector3()
 		st.ang = Vector3()
 		model.reset()
+		model.quad.src_v = model.quad.batt_v0 * pack_scale
 		if air != null:
 			air.clear_wake()
 		var integ := 0.0

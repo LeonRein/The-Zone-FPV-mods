@@ -171,10 +171,12 @@ MODELS... (THE MODEL MANAGER)
   tracking error, each setting at most 20 % from the flown one and within
   bounds for its class (D at most 1.5 x Betaflight's default D-max with the
   RPM filter: the sim has no gyro noise or motor heat), without more motor
-  saturation or overshoot (stick steps, your sticks' stops) and without less
-  stability margin (peak sensitivity and phase margin per axis from a chirp
-  at hover, on the identified plant and on one with less inertia and more
-  motor delay) than the flown tune. The filters stay as flown. The result stays in the model (fc_optimized.json,
+  saturation or overshoot (stick steps, your sticks' stops) and without a
+  higher peak sensitivity per axis than the flown tune's or 2.0 (a chirp on
+  a mid-charge pack, at hover and, when TPA or thrust linear change, at full
+  throttle; on the identified plant and on one with 15 % more loop gain and
+  0.4 ms more dead time, there up to 2.5). The filters stay as flown.
+  The result stays in the model (fc_optimized.json,
   and tune.md: flown and optimized per setting, what stopped each, the
   predicted changes, what is not modelled; the model's page shows it above
   the report); a drone flies it when its tune setting is "optimized" (see
