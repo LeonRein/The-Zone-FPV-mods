@@ -82,6 +82,11 @@ func _init(p_package_dir: String) -> void:
 	plant_params = _load_json(package_dir.path_join("plant.json"))
 	if craft.is_empty() or fc_cfg.is_empty() or plant_params.is_empty():
 		return
+	for k in ["mass", "Ixx", "Iyy", "Izz", "kT"]:       # (a body without mass or inertia, or a rotor without thrust, cannot fly)
+		var v: Variant = plant_params.get(k)
+		if not ((v is float or v is int) and is_finite(float(v)) and float(v) > 0.0):
+			push_error("bf_model: plant.json %s must be a number above zero in %s" % [k, package_dir])
+			return
 	_rx_frame_us = maxi(1, roundi(1e6 / maxf(float(fc_cfg.get("rx_rate_hz", 250.0)), 1.0)))
 	_deadband = clampf(float(fc_cfg.get("deadband", 0.0)), 0.0, 499.0)
 	_yaw_deadband = clampf(float(fc_cfg.get("yaw_deadband", 0.0)), 0.0, 499.0)
@@ -481,6 +486,11 @@ func reset() -> void:
 	_vel = Vector3()
 
 
+## Takes the body's velocities again (the game's physics moved it meanwhile); the rotors and the controller go on
+func resync() -> void:
+	_have_state = false
+
+
 func get_camera_angle_deg() -> float:
 	return float(craft.get("camera_angle_deg", 20.0))    # camera uptilt of the real quad
 
@@ -536,8 +546,10 @@ func _vibrate(gyro: PackedFloat64Array, dt: float, a: float, sc: float) -> void:
 func integrate_forces(_body: RigidBody3D, state: PhysicsDirectBodyState3D, rc: Dictionary, armed: bool) -> void:
 	if not valid:
 		return
-	var t0 := Time.get_ticks_usec()
 	var tick_dt := state.step
+	if not (tick_dt > 0.0):         # time_scale 0: nothing to integrate (a division by it would be NaN)
+		return
+	var t0 := Time.get_ticks_usec()
 	var basis := state.transform.basis.orthonormalized()
 	var pos := state.transform.origin
 	var pos0 := pos
