@@ -326,7 +326,7 @@ class State extends PhysicsDirectBodyState3DExtension:
 		ang = v
 
 
-## One seed's flight: the model, its air, a pilot as the propwash test's
+## One seed's flight: the model, its air (null: clean air, as autotune.gd flies), a pilot as the propwash test's
 class Sim:
 	var model: BFModel
 	var air: Node
@@ -347,7 +347,8 @@ class Sim:
 
 	## Frees the air and the body state (Objects, not reference counted)
 	func dispose() -> void:
-		air.free()
+		if air != null:
+			air.free()
 		st.free()
 
 	func set_plant(p: Dictionary) -> void:
@@ -369,23 +370,27 @@ class Sim:
 
 	func start() -> void:
 		model.quad.rng.seed = seed_n
-		air.free_start(_msg(), seed_n)
+		if air != null:
+			air.free_start(_msg(), seed_n)
 
 	## One physics tick: dirty_air's air for it (as bf_model.apply_air(), floor and ceiling 1), the model,
 	## then the pose integrated as Godot does with the velocities handed back
 	func tick() -> void:
 		var q := model.quad
-		air.free_tick(_msg(), st.xf, st.lin, dt)
 		q.thrust_scale.fill(1.0)
-		q.has_air = true
-		q.air_vel = air.wake_flow
-		q.air_mean = air.descent_mean
-		var ax: Array = air.prop_axial
-		var fl: Array = air.prop_vrs
-		for i in 4:
-			var j: int = BFModel.DIRTY_AIR_PROP[i]
-			q.air_axial[i] = float(ax[j])
-			q.air_fluct[i] = float(fl[j])
+		if air == null:
+			q.has_air = false
+		else:
+			air.free_tick(_msg(), st.xf, st.lin, dt)
+			q.has_air = true
+			q.air_vel = air.wake_flow
+			q.air_mean = air.descent_mean
+			var ax: Array = air.prop_axial
+			var fl: Array = air.prop_vrs
+			for i in 4:
+				var j: int = BFModel.DIRTY_AIR_PROP[i]
+				q.air_axial[i] = float(ax[j])
+				q.air_fluct[i] = float(fl[j])
 		model.integrate_forces(null, st, rc, true)
 		var b := st.xf.basis
 		var a := st.ang * dt
@@ -418,14 +423,15 @@ class Sim:
 			_rec()
 
 	## Teleport to a still, level hover at HOVER_H and settle (wake cleared); returns the mean throttle of its last second
-	func hover_at() -> float:
+	func hover_at(seconds := 2.5) -> float:
 		st.xf = Transform3D(Basis.IDENTITY, Vector3(0, HOVER_H, 0))
 		st.lin = Vector3()
 		st.ang = Vector3()
 		model.reset()
-		air.clear_wake()
+		if air != null:
+			air.clear_wake()
 		var integ := 0.0
-		var n := int(2.5 / dt)
+		var n := int(seconds / dt)
 		var sum := 0.0
 		for i in n:
 			if i % 50 == 0 and _cancelled():
