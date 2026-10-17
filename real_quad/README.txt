@@ -69,13 +69,17 @@ WHAT CHANGES
       flow and gusts of the wake the quad left behind, its descent curve
       and vortex ring state - goes into the model's props (descending,
       dirty_air's descent curve replaces the props' own inflow, so nothing
-      counts twice). dirty_air's wash and wake stay its own (1); each
-      model sets the gusts of the old wake (plant.json dirty_air_gust;
-      freestyle5 5.18, freestyle35 5.4) and a light turbulence in calm
-      air (turb_base_ms; 0.282 and 0.238 m/s), calibrated so that the gyro
-      shakes as much as the real quad's did in its logs: a drop and catch
-      as its worst moments, a hover as its calm ones. Dropping straight down and
-      punching out is the worst case. Without dirty_air the quad flies in
+      counts twice). dirty_air's wash, wake and gust stay its own (1).
+      How rough its air is drives the model's own turbulence at each prop
+      (plant.json pw_turb_ms; freestyle5 4.93, freestyle35 3.97 m/s in the
+      heart of the wake, fading over a quarter second once out of it), and
+      a light turbulence in calm air (turb_base_ms; 0.277 and 0.243 m/s),
+      calibrated so that the gyro shakes as much as the real quad's did in
+      its logs: a drop and catch as its worst moments, a hover as its calm
+      ones. Dropping straight down and punching out is the worst case: many
+      small kicks for a few tenths of a second. Above hover the turbulence
+      grows with the rotor speed as the logs' does (full throttle about
+      twice as rough as a hover). Without dirty_air the quad flies in
       clean air: no prop wash, only the light calm-air turbulence
     - the game keeps its inputs and arming, OSD and camera (its camera
       settings apply), crash and respawn, sound (its pitch follows the
@@ -110,7 +114,9 @@ MODELS
     plant.json  the quad worked out from the logs: motors, thrust and
                 torque constants, inertia, drag, battery sag, and
                 dirty_air's wash, wake and gust for it (dirty_air_wash,
-                dirty_air_wake, dirty_air_gust; 1 each if missing)
+                dirty_air_wake, dirty_air_gust; 1 each if missing) and
+                the turbulence in its wake and in calm air (pw_turb_ms,
+                turb_base_ms)
   craft.json "battery": {"cells", "capacity_mah", "lihv"} is the pack it
   flies on. Without capacity_mah, battery_capacity_mah in settings.cfg is
   used and status.txt says so.
@@ -155,8 +161,8 @@ MODELS... (THE MODEL MANAGER)
   Prop wash: the build flies the new model through dirty_air's air (no
   map, high up, a few dozen times, in the background: under a minute for
   a 4 kHz quad on most computers, about twice that at 8 kHz) and sizes the
-  old wake's gusts to the shake of the logs' drops and catches and the
-  calm-air turbulence to their calm hovers; the report says "Prop wash
+  turbulence in its own wake to the shake of the logs' drops and catches
+  and the calm-air turbulence to their calm hovers; the report says "Prop wash
   calibrated: drop and catch ... (log ...), calm ... (log ...)", or why
   not (dirty_air not installed, no calm hovers or no drops in the logs:
   class values, and what to fly). A model calibrated with another version

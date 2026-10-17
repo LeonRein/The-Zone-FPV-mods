@@ -11,7 +11,7 @@ extends RefCounted
 ##   7 battery                  V0 and sag
 ##   8 drag                     rotor and body drag (ACC), else top speed, else class default
 ##   9 propwash                 log metric (the calibration's targets)
-##  9b prop wash calibration    dirty_air's gust and the calm-air turbulence, flown in dirty_air's air
+##  9b prop wash calibration    the own wake's and the calm-air turbulence, flown in dirty_air's air
 ##                              (calibrate.gd; after the validation, which does not depend on them)
 ##  10 validate, coverage, grade
 ##  9c optimized tune           grade A/B: autotune.gd (simulator only), after the grade
@@ -859,7 +859,7 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 		"fly_next": fly, "cli": rep.cli, "propwash": pw, "param_sources": _param_sources(rd_ok, body_src, yaw_ok, use_chirp, b, bat, geo, sources),
 		"runtime_s": Num.pyround(rep.runtime, 1)}
 	for k in pwc.calibrated:
-		lf.param_sources[{"calm": "turb_base_ms", "dropcatch": "dirty_air_gust"}[k]] = "M"
+		lf.param_sources[{"calm": "turb_base_ms", "dropcatch": "pw_turb_ms"}[k]] = "M"
 	var md := rep.render()
 	steps["12_final"] = {"plant": p, "fc": cfg, "craft": pkg_craft, "logfit": lf}
 	if out_dir != "":
