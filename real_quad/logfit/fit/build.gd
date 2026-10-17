@@ -101,7 +101,7 @@ static func canonical_order(paths: PackedStringArray) -> PackedStringArray:
 ## Decodes the files (in parallel, one task per file), in canonical order:
 ## [{name, size, sha256, path, sessions: [Flight], error ("" | csv | unreadable | not_blackbox), why}].
 ## Session ids are made unique (unique_names()).
-func load_files(paths: PackedStringArray, from_frac: float = 0.0, to_frac: float = 0.25) -> Array:
+func load_files(paths: PackedStringArray, from_frac: float = 0.0, to_frac: float = 0.02) -> Array:
 	var out: Array = []
 	for p in paths:
 		out.append({"path": p, "name": p.get_file(), "size": 0, "sha256": "", "sessions": [], "error": "", "why": ""})
@@ -264,7 +264,7 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 	errs = file_errors(files_in)
 	if not errs.is_empty():
 		return _refuse(errs)
-	_say("Checking the logs", 0.26)
+	_say("Checking the logs", 0.02)
 	var reason := {}
 	for L: Flight in all_s:
 		reason[L.name] = Checks.skip_reason(L)
@@ -436,7 +436,7 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 		return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
 
 	# 1 segment
-	_say("Finding the usable flight", 0.3)
+	_say("Finding the usable flight", 0.03)
 	var segs := Num.parallel_for(LL.size(), func(k: int) -> Dictionary: return Segments.segment_log(LL[k], erpm_limit, _cancelled))
 	if cancel_flag:
 		return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
@@ -455,7 +455,7 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 		warns.append(Checks.issue("soft_airborne", "warning", "%d s of usable airborne flight (180 s recommended)" % roundi(air_s), "add logs with more flying"))
 
 	# 2 FC config
-	_say("Betaflight settings", 0.35)
+	_say("Betaflight settings", 0.04)
 	var src := FcConfig.pick_source(LL)
 	var fr := FcConfig.from_headers(src.headers, c.name)
 	var cfg: Dictionary = fr[0]
@@ -470,7 +470,7 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 	steps["02_fc"] = {"source": src.name, "missing": missing, "tune_differences": diff}
 
 	# 3 motor
-	_say("Motor and ESC model", 0.37)
+	_say("Motor and ESC model", 0.04)
 	var rows := Num.parallel_for(LL.size(), func(k: int) -> Dictionary: return Motor.prep(LL[k], uses[k], Motor.DELAY_S, _cancelled))
 	if cancel_flag:
 		return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
@@ -486,7 +486,7 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 	var P0: Array = mf[0]
 	var V: Dictionary = mf[1]
 	var r2: float = mf[2]
-	_say("Motor dynamics", 0.45)
+	_say("Motor dynamics", 0.065)
 	var rd := Motor.refine_dynamics(rows, P0, V, kv_rad, _cancelled)
 	if rd.is_empty():
 		return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
@@ -499,7 +499,7 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 	for k in LL.size():
 		var e: PackedFloat64Array = Motor.free_run_error_hz(rows[k], sims[k])[0]
 		frh[LL[k].name] = Num.mean(e)
-	_say("Motor response", 0.55)
+	_say("Motor response", 0.07)
 	var gain := Motor.response_gain(rows, sims, [5, 10, 20, 30], _cancelled)
 	if cancel_flag:
 		return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
@@ -536,7 +536,7 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 		return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
 
 	# 4 hover / kT
-	_say("Hover and thrust", 0.6)
+	_say("Hover and thrust", 0.1)
 	var model_v: Array = rows.map(func(r): return Motor.model_v(r, V))
 	var hv: Variant = Thrust.hover(LL, uses, mass, model_v, _cancelled)
 	if cancel_flag:
@@ -555,7 +555,7 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 	steps["04_thrust"] = {"hover": h, "steady": steady}
 
 	# 5 rotation
-	_say("Rotation", 0.64)
+	_say("Rotation", 0.105)
 	var band: Array = Rotation.BAND
 	var bcol := PackedFloat64Array()
 	for m in 4:
@@ -613,7 +613,7 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 		"fit": fit, "params": rp, "yaw_reversed": yaw_rev, "yaw_ok": yaw_ok, "yaw_reversed_default": rev_default, "kQ": kQ, "torque_ratio": tq}
 
 	# 6 bias
-	_say("Trim", 0.7)
+	_say("Trim", 0.13)
 	var b: Variant = Bias.fit(LL, uses, geo.arm, kT, kQ, s0, _cancelled)
 	if cancel_flag:
 		return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
@@ -621,7 +621,7 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 	steps["06_bias"] = {"bias": b}
 
 	# 7 battery
-	_say("Battery", 0.72)
+	_say("Battery", 0.13)
 	var bat_raw: Variant = Battery.fit(rows, LL, P, V, kv_rad, 0.1, _cancelled)
 	if cancel_flag:
 		return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
@@ -664,7 +664,7 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 		return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
 
 	# 8 drag
-	_say("Drag", 0.75)
+	_say("Drag", 0.135)
 	var shape: Array = dflt.cd_area
 	var dfit := Drag.fit(LL, uses, mass, shape, h.sum_w, h.sum_w2, _cancelled)
 	if cancel_flag:
@@ -698,7 +698,7 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 		"cd_area": p.cd_area, "top_speed": top, "top_speed_default_body": top_default}
 
 	# 9 propwash
-	_say("Propwash metric", 0.85)
+	_say("Propwash metric", 0.14)
 	var pw := Propwash.log_metric(LL, uses, h.throttle, _cancelled)
 	if cancel_flag:
 		return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
@@ -706,7 +706,7 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 	steps["09_propwash"] = pw
 
 	# 10 validate
-	_say("Closed-loop check", 0.87)
+	_say("Closed-loop check", 0.15)
 	p._comment = "%s: plant identified by real_quad logfit %s from %d blackbox log sessions (%s); see report.md. Body frame FLU = Betaflight gyro frame; motor order RR, FR, RL, FL." % [
 		c.name, LOGFIT_VERSION, LL.size(), ", ".join(LL.map(func(x): return x.name))]
 	var pp := {}
@@ -722,14 +722,14 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 	steps["10_validate"] = {"hover": hvv, "events": ev, "t90": t90}
 
 	# 9b prop wash calibration
-	_say("Prop wash calibration", 0.88)
+	_say("Prop wash calibration", 0.155)
 	var cal := Calibrate.new()
 	_mutex.lock()
 	_cal = cal
 	_mutex.unlock()
 	if cancel_flag:
 		cal.cancel()
-	cal.progress = func(fr: float) -> void: _say("Prop wash calibration", 0.88 + 0.03 * fr)
+	cal.progress = func(fr: float) -> void: _say("Prop wash calibration", 0.155 + 0.115 * fr)
 	var pwc := cal.run(Craft.package_craft(c), cfg, p, pw)
 	_mutex.lock()
 	_cal = null
@@ -741,7 +741,7 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 	steps["09b_calibration"] = pwc
 
 	# plausibility vs the class band
-	_say("Grade and report", 0.91)
+	_say("Grade and report", 0.27)
 	var s: float = geo.scale
 	var I0 := 2.0e-3 * (mass / 0.65) * s * s
 	var tau := 0.0
@@ -818,14 +818,14 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 	# 9c optimized tune (grade A/B)
 	var tune := {}
 	if letter in ["A", "B"]:
-		_say("Optimizing the tune", 0.92)
+		_say("Optimizing the tune", 0.27)
 		var at := Autotune.new()
 		_mutex.lock()
 		_at = at
 		_mutex.unlock()
 		if cancel_flag:
 			at.cancel()
-		at.progress = func(fr: float) -> void: _say("Optimizing the tune", 0.92 + 0.07 * fr)
+		at.progress = func(fr: float) -> void: _say("Optimizing the tune", 0.27 + 0.72 * fr)
 		tune = at.run(Craft.package_craft(c), cfg, p, LL, cls)
 		_mutex.lock()
 		_at = null
