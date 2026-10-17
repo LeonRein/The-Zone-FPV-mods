@@ -36,7 +36,7 @@ const EXTS := ["bbl", "bfl", "txt"]
 const TYPING := "zm_typing"
 const CONFIRM_TEXT := "All logs were flown with the same weight, props and battery"
 const INPUTS_UNKNOWN := "Inputs unknown - add logs to rebuild"
-const STALE_HINT := "Built with another dirty_air version - rebuild to update."
+const STALE_HINT := "Prop wash calibrated by another version of dirty_air or real_quad - rebuild to update."
 
 # contract 4.2: weight band (g), cells, default prop D / pitch / blades, pack mAh, ducted, Zone drone
 const CLASSES := {

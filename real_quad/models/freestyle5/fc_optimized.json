@@ -5,8 +5,8 @@
  "pid_process_denom": 2.0,
  "pid": {
   "roll": [
-   50,
-   66,
+   45.0,
+   55.0,
    27
   ],
   "pitch": [
@@ -21,7 +21,7 @@
   ]
  },
  "ff_weight": [
-  125.0,
+  140,
   130.0,
   140.0
  ],
@@ -94,7 +94,7 @@
  "thrust_linear": 0.0,
  "motor_output_limit": 100.0,
  "motor_idle": 550.0,
- "dyn_idle_min_rpm": 43,
+ "dyn_idle_min_rpm": 37,
  "dyn_idle_p_gain": 50.0,
  "dyn_idle_i_gain": 50.0,
  "dyn_idle_d_gain": 50.0,
@@ -150,8 +150,8 @@
  "motor_kv": 1855.0,
  "_tune": {
   "fc_sha256": "e1a0035fd0a1da8cd0e020606b45b0453758bd25783585e6dde0ba5c268b6c56",
-  "plant_sha256": "7b84cd17373fd9dcf2c605f8eda105d62712dc3a0a186d87b365fa6fce19e779",
-  "created": "2026-10-16T19:21:11+00:00",
+  "plant_sha256": "2ebdd20de300418459dfa9755ac0d5b56785ab8178c1ae57c7c6ea12d6d4cca5",
+  "created": "2026-10-17T09:01:33+00:00",
   "record": {
    "class": "five",
    "flown": {
@@ -186,11 +186,11 @@
      },
      {
       "name": "propwash seed 1",
-      "err": 13.645403270395988
+      "err": 17.791912512007773
      },
      {
       "name": "propwash seed 2",
-      "err": 14.952252298798768
+      "err": 12.246776096457376
      }
     ],
     "ok": true,
@@ -240,7 +240,7 @@
      "steps": 15.68921525702619,
      "flip": 76.38104820100126,
      "replay": 5.361707782425405,
-     "propwash": 14.298827784597378
+     "propwash": 15.019344304232575
     },
     "sat": 0.010916666666666667,
     "cost": 1.0
@@ -249,102 +249,103 @@
     "flights": [
      {
       "name": "steps_hover",
-      "err": 11.436059349613648
+      "err": 11.43162077864939
      },
      {
       "name": "steps_idle",
-      "err": 21.923602433435203
+      "err": 22.294802965117203
      },
      {
       "name": "steps_punch",
-      "err": 11.42037999458902
+      "err": 11.5385391191702
      },
      {
       "name": "flip",
-      "err": 74.74275412646004
+      "err": 75.27069651299288
      },
      {
       "name": "replay m5_06_freestyle_abgeschnitten#1 27 s",
-      "err": 4.291618775325992
+      "err": 4.394555835121196
      },
      {
       "name": "replay m5_06_freestyle_abgeschnitten#1 19 s",
-      "err": 4.5620943367627635
+      "err": 4.852574045296208
      },
      {
       "name": "replay btfl_012#1 127 s",
-      "err": 4.957109149483875
+      "err": 5.484150306447491
      },
      {
       "name": "propwash seed 1",
-      "err": 12.710695834022632
+      "err": 16.92531579539559
      },
      {
       "name": "propwash seed 2",
-      "err": 15.286327523953224
+      "err": 11.576429883479951
      }
     ],
     "ok": true,
     "why": "",
-    "overshoot_replay": 0.08100815206222368,
+    "overshoot_replay": 0.07616639082862249,
     "ms": {
      "hover": [
       [
-       1.9470575046379028,
-       1.7943619490362257,
-       1.4194528685306937
+       1.8266014830409765,
+       1.794508510584947,
+       1.4197959261062016
       ],
       [
-       2.3664143032413896,
-       2.153848028664767,
-       1.5933173931008835
+       2.182584929675169,
+       2.1537659646315697,
+       1.5934079535083032
       ]
      ],
      "breakpoint": [
       [
-       1.9541545903456794,
-       1.834267475983726,
-       1.3683905731531274
+       1.8460331595214872,
+       1.8342920493487118,
+       1.3697075751518848
       ],
       [
-       2.4151360312127683,
-       2.2464650567300013,
-       1.5251047463527547
+       2.2320462571149187,
+       2.24647625038153,
+       1.5258736196230958
       ]
      ],
      "full": [
       [
-       1.742803812627917,
-       1.713401675454545,
-       1.171474422826297
+       1.6806831321901665,
+       1.7133783357595578,
+       1.1715419483431422
       ],
       [
-       2.1205716462753417,
-       2.090525441767688,
-       1.2416252217270705
+       2.01471074715276,
+       2.0904506775832172,
+       1.2416788576609012
       ]
      ]
     },
     "t90": 0.016,
-    "overshoot": 0.043558708445833094,
+    "overshoot": 0.016993439925752085,
     "groups": {
-     "steps": 14.926680592545956,
-     "flip": 74.74275412646004,
-     "replay": 4.60360742052421,
-     "propwash": 13.998511678987928
+     "steps": 15.088320954312266,
+     "flip": 75.27069651299288,
+     "replay": 4.910426728954965,
+     "propwash": 14.250872839437772
     },
-    "sat": 0.012285714285714287,
-    "cost": 0.9418885333603464
+    "sat": 0.012744897959183673,
+    "cost": 0.9529575767435423
    },
    "why": {
-    "Roll P up": "stability margin",
+    "Roll P up": "no better flight",
     "Roll P down": "no better flight",
     "Roll D up": "no better flight",
     "Roll D down": "trust region",
     "Roll D-max up": "trust region",
     "Roll Feedforward up": "no better flight",
     "Roll Feedforward down": "no better flight",
-    "Roll I up": "trust region",
+    "Roll I up": "no better flight",
+    "Roll I down": "no better flight",
     "Pitch P up": "trust region",
     "Pitch D up": "no better flight",
     "Pitch D down": "no better flight",
@@ -361,20 +362,19 @@
     "Yaw I up": "no better flight",
     "Yaw I down": "no better flight",
     "Roll D-max down": "no better flight",
-    "Roll I down": "no better flight",
     "Pitch P down": "no better flight",
     "TPA rate (%) up": "no better flight",
     "TPA rate (%) down": "trust region",
     "TPA breakpoint up": "no better flight",
     "TPA breakpoint down": "no better flight",
     "Dynamic idle (x100 rpm) up": "still gaining when the search ended",
-    "Dynamic idle (x100 rpm) down": "no better flight",
+    "Dynamic idle (x100 rpm) down": "still gaining when the search ended",
     "Anti-gravity gain up": "no better flight",
     "Anti-gravity gain down": "trust region",
     "Thrust linear (%) up": "trust region",
     "Thrust linear (%) down": "class bound"
    },
-   "evals": 80,
+   "evals": 83,
    "flights": [
     "steps_hover",
     "steps_idle",
@@ -384,7 +384,7 @@
     "replay m5_06_freestyle_abgeschnitten#1 19 s",
     "replay btfl_012#1 127 s"
    ],
-   "runtime_s": 134.1,
+   "runtime_s": 140.4,
    "hover_throttle": -0.473410247708563,
    "propwash": true
   }

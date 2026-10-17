@@ -333,9 +333,9 @@ func propwash(lg: Dictionary, p: Dictionary, dflt: Dictionary) -> void:
 	var own: bool = dflt.dirty_air_from == c.get("class")
 	var lines := ["Log metric (15–78 Hz roll/pitch tracking error, deg/s, median): calm %s, after throttle chops %s, flips after chops %s; 99th percentile of all usable windows outside chirps %s (windows %s). The targets of the prop wash calibration (below)." % [
 		str(lg.calm), str(lg.chops), str(lg.flips), str(lg.worst_p99), str(lg.n)],
-		"Class values before the calibration: dirty_air gust %s from the %s class%s, calm-air turbulence %s m/s (reference scaled with the induced velocity, factor %s)." % [
-			str(p.dirty_air_gust), dflt.dirty_air_from, "" if own else " (uncalibrated for this class)", str(p.turb_base_ms), f(dflt.v_induced_ratio, 3)],
-		"Wake/VRS amplitudes of the Python plant (unused in the game): pw_turb_ms %s, wake_r0 %s m." % [str(p.pw_turb_ms), str(p.wake_r0)]]
+		"Class values before the calibration: dirty_air gust %s from the %s class%s, turbulence in the own wake %s m/s and in calm air %s m/s (reference scaled with the induced velocity, factor %s)." % [
+			str(p.dirty_air_gust), dflt.dirty_air_from, "" if own else " (uncalibrated for this class)", str(p.pw_turb_ms), str(p.turb_base_ms), f(dflt.v_induced_ratio, 3)],
+		"Wake radius of the Python plant (unused in the game): wake_r0 %s m." % str(p.wake_r0)]
 	sec("Propwash / turbulence", lines)
 
 
@@ -351,14 +351,14 @@ func propwash_calibration(rec: Dictionary) -> void:
 	lines.append("- Drop and catch: 0.9 s at zero throttle from a hover, caught at 45 %%; its worst 0.25-s window against %s × the logs' 99th percentile (freestyle5's scale: 14.5 deg/s at 11.3)." % fx(Cal.DROP_PER_P99, 3))
 	lines.append("- Calm: 2 s of hover; its median 0.25-s window against the logs' calm median.")
 	if "dropcatch" in rec.calibrated:
-		meas("dirty_air gust", str(rec.gust), "drop and catch %s deg/s (target %s)" % [str(sc.dropcatch), str(tg.dropcatch)])
+		meas("Own wake's turbulence", "%s m/s" % str(rec.pw_turb_ms), "drop and catch %s deg/s (target %s)" % [str(sc.dropcatch), str(tg.dropcatch)])
 	else:
-		default("dirty_air gust", str(rec.gust), "class value: not calibrated (%s)" % rec.why)
+		default("Own wake's turbulence", "%s m/s" % str(rec.pw_turb_ms), "class value: not calibrated (%s)" % rec.why)
 	if "calm" in rec.calibrated:
 		meas("Calm-air turbulence", "%s m/s" % str(rec.turb_base_ms), "calm hover %s deg/s (target %s)" % [str(sc.calm), str(tg.calm)])
 	else:
 		default("Calm-air turbulence", "%s m/s" % str(rec.turb_base_ms), "class value: not calibrated (%s)" % rec.why)
-	default("dirty_air wash/wake", "1/1", "dirty_air's own figures")
+	default("dirty_air wash/wake/gust", "1/1/%s" % str(rec.gust), "dirty_air's own figures")
 	sec("Prop wash calibration", lines)
 
 

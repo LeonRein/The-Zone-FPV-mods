@@ -47,7 +47,7 @@ Form: 0.3 kg, 4S lipo, 3650 KV, prop 3.5" × 2.5" × 3, class mini, top speed un
 | Torque imbalance β | [0.69, -3.7, 1.4] ×10⁻³ m | eRPM differences at hover |
 | Battery V0, sag R | 15.95 V, 0.128 | vbat |
 | Rotor drag (linear) | 0.33 1/s | ACC dead reckoning |
-| dirty_air gust | 6.03 | drop and catch 14.86 deg/s (target 14.78) |
+| Own wake's turbulence | 3.97 m/s | drop and catch 14.87 deg/s (target 14.78) |
 | Calm-air turbulence | 0.243 m/s | calm hover 0.79 deg/s (target 0.79) |
 
 ## Class defaults and assumptions
@@ -56,8 +56,8 @@ Form: 0.3 kg, 4S lipo, 3650 KV, prop 3.5" × 2.5" × 3, class mini, top speed un
 | Motor distance (arm) | 55 mm | 80 mm × D/5.1" (only the absolute inertias depend on it) |
 | Izz | 0.000758 kg·m² | 1.7 × mean roll/pitch inertia (only J_rotor/Izz is measured) |
 | Body drag | cd_area [0.00461, 0.00552, 0.0139] | reference × (D/5.1")² |
-| dirty_air wash/wake/gust | 1.0/1.0/4.01 | class values, calibrated in the game: mini class |
-| Wake/turbulence/VRS | turb 0.307 / 3.76 m/s | reference scaled physically (Python plant only) |
+| dirty_air wash/wake/gust | 1.0/1.0/1.0 | dirty_air's own figures |
+| Wake/turbulence/VRS | turb 0.307 / 3.76 m/s | reference scaled physically (calibrated in the game) |
 | dirty_air wash/wake | 1/1 | dirty_air's own figures |
 
 ## Plausibility vs. the mini class band
@@ -157,7 +157,7 @@ Top speed of the model (full throttle, level, fresh pack with sag): **115 km/h**
 
 ## Propwash / turbulence
 Log metric (15–78 Hz roll/pitch tracking error, deg/s, median): calm 0.79, after throttle chops 0.95, flips after chops 3.87; 99th percentile of all usable windows outside chirps 11.52 (windows (4962, 898, 144, 10940)). Targets of the prop wash calibration in the game (real_quad: drop and catch = 1.283 × p99, calm = the calm median).
-dirty_air wash/wake/gust 1.0/1.0/4.01 from the mini class.
+dirty_air wash/wake/gust 1.0/1.0/1.0 from the mini class.
 Wake/turbulence amplitudes of the Python plant: reference values scaled with the induced velocity (factor 0.99): turb_base_ms 0.307, pw_turb_ms 3.76, wake_r0 0.0824 m.
 
 ## Validation
@@ -167,6 +167,6 @@ Events (session, time, plateau deg/s, t90 log/sim ms): mini_03_freestyle#1 27.52
 
 ## Prop wash calibration
 - Prop wash calibrated: drop and catch 14.9 °/s (log 14.8), calm 0.79 °/s (log 0.79)
-- dirty_air 1.1, wash and wake 1 (its own figures); scenarios flown in its air without the game (no map, 60 m up), mean of 32 seeds, 5 runs, 33.1 s.
+- dirty_air 1.1, wash and wake 1 (its own figures); scenarios flown in its air without the game (no map, 60 m up), mean of 32 seeds, 4 runs, 28.2 s.
 - Drop and catch: 0.9 s at zero throttle from a hover, caught at 45 %; its worst 0.25-s window against 1.283 × the logs' 99th percentile (freestyle5's scale: 14.5 deg/s at 11.3).
 - Calm: 2 s of hover; its median 0.25-s window against the logs' calm median.

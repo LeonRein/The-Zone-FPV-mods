@@ -540,7 +540,7 @@ func _run(job: Job, id: String, form: Dictionary, add: Array, keep: Array, old_l
 				return fail.call("cancelled")
 			return fail.call("Cannot copy %s into the model's folder (disk full?)." % src.get_file())
 		entries.append({"name": nm, "size": size, "sha256": sha, "path": stage.path_join(nm), "staged": true})
-		job.progress("Copying the logs", 0.05 * float(i + 1) / maxi(add.size(), 1))
+		job.progress("Copying the logs", 0.01 * float(i + 1) / maxi(add.size(), 1))
 	if entries.is_empty():
 		return fail.call("No logs to build from.")
 	entries.sort_custom(func(a, b): return str(a.name) < str(b.name))
@@ -550,7 +550,7 @@ func _run(job: Job, id: String, form: Dictionary, add: Array, keep: Array, old_l
 	var out := work.path_join("building").path_join(id)
 	var fform := form.duplicate(true)
 	fform.erase("overwrite")
-	var prog := func(step: String, frac: float): job.progress(step, 0.05 + 0.95 * frac)
+	var prog := func(step: String, frac: float): job.progress(step, 0.01 + 0.98 * frac)
 	var res: Dictionary = job.logfit.build(paths, fform, out, prog)
 	res["notes"] = notes
 	if job.cancelled:

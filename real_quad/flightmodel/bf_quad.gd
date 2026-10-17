@@ -8,6 +8,9 @@ extends RefCounted
 ## them) and a weak calm-air turbulence. Prop wash - the wake the quad leaves behind, its gusts, the
 ## descent curve and the vortex ring state - is dirty_air's: bf_model.apply_air() puts its air at each
 ## prop into has_air / air_* below each physics tick. Without dirty_air the quad flies in clean air.
+## How rough dirty_air's air is (air_wash, held for WASH_HOLD as it fades) adds pw_turb_ms to the
+## turbulence: the buffeting of a punch out of the own wake lasts as the logs' does, many small kicks
+## of each prop rather than one of the ring state's mean thrust.
 ##
 ## Battery: the motors see v_batt = src_v - src_rp * current_proxy - src_ra * amps (model volts). By
 ## default that is the identified sag of a fresh pack (battery_v0, battery_r times the identification's
@@ -25,6 +28,7 @@ const RHO := 1.225                   # air density [kg/m^3]
 const G := 9.81
 const PROP_LOAD_MIN := 0.15          # prop load factor limits (inflow from above / below)
 const PROP_LOAD_MAX := 1.6
+const WASH_HOLD := 0.25              # the rough air's buffeting fades over this [s] once out of it
 
 # --- identified / configured parameters (see _init)
 var mass: float
@@ -49,6 +53,8 @@ var drive_efficiency: float          # motors + ESCs, mechanical power over elec
 var prop_radius: float
 var turb_base_ms: float              # calm-air turbulence [m/s]
 var turb_hz: float                   # centre frequency of the turbulence [Hz]
+var pw_turb_ms: float                # the turbulence in the heart of the own wake (air_wash 1) [m/s]
+var w_hover: float                   # rotor speed at hover [rad/s]: the turbulence's thrust grows as sqrt(w) above it
 
 # --- runtime switches
 var turbulence_enabled := true
@@ -69,7 +75,7 @@ var air_vel := Vector3()             # air velocity at the quad (world) [m/s]: t
 var wind := Vector3()                # the game's wind (world) [m/s]: moving air, on every path (with and without dirty_air); kept by clear_air()
 var air_mean: float = 1.0            # mean thrust ratio descending (descent curve, vortex ring state)
 var air_axial := PackedFloat64Array([0, 0, 0, 0])   # axial air speed at each prop beyond the centre's (wake flow, gusts) [m/s], + = up through the prop
-var air_fluct := PackedFloat64Array([0, 0, 0, 0])   # each prop's relative thrust fluctuation (vortex ring state)
+var air_wash: float = 0.0            # how rough the air is (dirty_air's wash_level: 1 = the heart of its wake)
 
 # --- state
 var w := PackedFloat64Array([0, 0, 0, 0])       # rotor speeds [rad/s]
@@ -82,6 +88,7 @@ var amps: float = 0.0                # battery current of the motors [A]
 var charge_as: float = 0.0           # amp-seconds, volt-seconds (v_batt) and seconds since bf_model last took them
 var charge_vs: float = 0.0
 var charge_t: float = 0.0
+var wash_held: float = 0.0           # air_wash held as it fades (WASH_HOLD)
 var turb_x1 := PackedFloat64Array([0, 0, 0, 0])
 var turb_x2 := PackedFloat64Array([0, 0, 0, 0])
 var rng := RandomNumberGenerator.new()
@@ -117,6 +124,8 @@ func _init(p: Dictionary) -> void:
 	prop_radius = float(p.prop_radius)
 	turb_base_ms = float(p.turb_base_ms)
 	turb_hz = float(p.pw_noise_hz)
+	pw_turb_ms = float(p.get("pw_turb_ms", 0.0))
+	w_hover = sqrt(mass * G / (4.0 * kT))
 	_turb_w0 = 2.0 * PI * turb_hz
 	_turb_w0sq = _turb_w0 * _turb_w0
 	_turb_c = 4.0 * 0.5 * _turb_w0 * _turb_w0 * _turb_w0
@@ -143,6 +152,7 @@ func reset() -> void:
 	charge_t = 0.0
 	turb_x1.fill(0.0)
 	turb_x2.fill(0.0)
+	wash_held = 0.0
 
 
 ## Clean air: no air from outside (dirty_air gone or not flying).
@@ -159,7 +169,7 @@ func clear_air() -> void:
 	air_vel = Vector3()
 	air_mean = 1.0
 	air_axial.fill(0.0)
-	air_fluct.fill(0.0)
+	air_wash = 0.0
 
 
 static func flu_to_local(v: Vector3) -> Vector3:
@@ -188,10 +198,12 @@ func step(u: PackedFloat64Array, dt: float, basis: Basis, vel: Vector3) -> Vecto
 		i_proxy += ui * maxf(ui * v_batt - w[i] / kv, 0.0)
 	current_proxy = i_proxy
 	v_batt = src_v - src_rp * i_proxy - src_ra * amps      # (amps of the last step)
-	# calm-air turbulence: an air velocity fluctuation u' along each prop's axis changes its angle
-	# of attack, dT = -kT * w * u' / pitch (relatively strongest at low rpm, as real propwash);
-	# dirty_air's wake flow and gusts at each prop act the same way
-	var u_amp := turb_base_ms if turbulence_enabled else 0.0
+	# calm-air turbulence and the own wake's buffeting: an air velocity fluctuation u' along each prop's
+	# axis changes its angle of attack, dT = -kT * w * u' / pitch (relatively strongest at low rpm, as real
+	# propwash), u' shrinking as 1/sqrt(w) above hover (the logs' roughness grows far less than w at full
+	# throttle); dirty_air's wake flow and gusts at each prop act the same way
+	wash_held = maxf(air_wash, wash_held * exp(-dt / WASH_HOLD))
+	var u_amp := turb_base_ms + pw_turb_ms * wash_held if turbulence_enabled else 0.0
 	var turb := u_amp > 0.0
 	var drive := 0.0
 	if turb:
@@ -227,12 +239,12 @@ func step(u: PackedFloat64Array, dt: float, basis: Basis, vel: Vector3) -> Vecto
 			x1 += x2 * dt
 			turb_x2[i] = x2
 			turb_x1[i] = x1
-			dv = u_amp * x1      # the prop's extra axial speed through the air
+			dv = u_amp * x1 * sqrt(w_hover / maxf(wn, w_hover))      # the prop's extra axial speed through the air
 		var den := maxf(wn * pitch_m_per_rad, 1.0)
 		var k := clampf(1.0 - v_ax / den, PROP_LOAD_MIN, PROP_LOAD_MAX) if own_load else 1.0
 		p_mech += maxf(kQ * k * wn * wn * wn + j_rotor * wn * wdi, 0.0)
 		if has_air:
-			k *= air_mean * (1.0 + air_fluct[i])
+			k *= air_mean
 			dv -= air_axial[i]
 		if dv != 0.0:                # the load's slope, -1/(w*pitch) per m/s, whatever the load
 			k = maxf(k - dv / den, 0.0)
