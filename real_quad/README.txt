@@ -162,6 +162,26 @@ MODELS... (THE MODEL MANAGER)
   class values, and what to fly). A model calibrated with another version
   of dirty_air than the one installed says so on its page: rebuild it to
   calibrate again.
+  Optimized tune (a build of grade A or B): how would the quad probably
+  fly when well tuned? The build then also flies the model in the
+  simulator - your own sticks from the logs, stick steps at idle, hover and
+  full throttle, flips, a drop and catch through dirty_air's air - and
+  searches its Betaflight settings (P, I, D, D-max, feedforward per axis,
+  then TPA, dynamic idle, anti-gravity, thrust linear) for the smallest
+  tracking error, each setting at most 20 % from the flown one and within
+  bounds for its class (D at most 1.5 x Betaflight's default D-max with the
+  RPM filter: the sim has no gyro noise or motor heat), without more motor
+  saturation or overshoot (stick steps, your sticks' stops) and without a
+  higher peak sensitivity per axis than the flown tune's or 2.0 (a chirp on
+  a mid-charge pack, at hover and, when TPA or thrust linear change, at full
+  throttle; on the identified plant and on one with 15 % more loop gain and
+  0.4 ms more dead time, there up to 2.5). The filters stay as flown.
+  The result stays in the model (fc_optimized.json,
+  and tune.md: flown and optimized per setting, what stopped each, the
+  predicted changes, what is not modelled; the model's page shows it above
+  the report); a drone flies it when its tune setting is "optimized" (see
+  SETTINGS; the built-in models come with theirs). A few minutes more for
+  the build. Simulator only, not a tune to copy to the real quad.
 
 
 WITH THE OTHER MODS
@@ -288,6 +308,10 @@ SETTINGS
         rates: "game" (the default: the sticks' rates are the game's own,
           Pause > Rates, and follow a change at once) or "model" (the
           rates of the model's own Betaflight setup)
+        tune: "flown" (the default: the real quad's Betaflight tune from
+          its logs) or "optimized" (the model's optimized tune, see
+          MODELS; without one, or out of date, the flown tune flies and the
+          status line says why). A change counts at once
         propwash: the strength of the prop wash, 1 = as calibrated, 0 =
           none (times the wash and wake the model hands to dirty_air)
         drag: the props' drag on the quad moving across them, 1/s at hover;

@@ -13,8 +13,10 @@ extends RefCounted
 ##   9 propwash                 log metric (the calibration's targets)
 ##  9b prop wash calibration    dirty_air's gust and the calm-air turbulence, flown in dirty_air's air
 ##                              (calibrate.gd; after the validation, which does not depend on them)
-##  10 validate, coverage, grade, report, package (craft.json format 2, fc.json, plant.json,
-##     report.md, logfit.json)
+##  10 validate, coverage, grade
+##  9c optimized tune           grade A/B: autotune.gd (simulator only), after the grade
+##     report, package (craft.json format 2, fc.json, plant.json, report.md, logfit.json; fc_optimized.json
+##     and tune.md with an optimized tune)
 ## run() never touches the scene tree (it runs in a worker Thread); a refusal writes nothing.
 ## cancel_flag is polled between steps and inside the long loops.
 
@@ -33,6 +35,7 @@ const Battery := preload("battery.gd")
 const Drag := preload("drag.gd")
 const Propwash := preload("propwash.gd")
 const Calibrate := preload("calibrate.gd")
+const Autotune := preload("autotune.gd")
 const Validate := preload("validate.gd")
 const Grade := preload("grade.gd")
 const Report := preload("report.gd")
@@ -57,6 +60,7 @@ var cancel_flag := false
 var steps := {}                      # every step's results (for the parity tests and logfit.json)
 var _decoders: Array = []
 var _cal: Calibrate = null
+var _at: Autotune = null
 var _mutex := Mutex.new()
 
 
@@ -67,6 +71,8 @@ func cancel() -> void:
 		d.cancel()
 	if _cal != null:
 		_cal.cancel()
+	if _at != null:
+		_at.cancel()
 	_mutex.unlock()
 
 
@@ -723,7 +729,7 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 	_mutex.unlock()
 	if cancel_flag:
 		cal.cancel()
-	cal.progress = func(fr: float) -> void: _say("Prop wash calibration", 0.88 + 0.08 * fr)
+	cal.progress = func(fr: float) -> void: _say("Prop wash calibration", 0.88 + 0.03 * fr)
 	var pwc := cal.run(Craft.package_craft(c), cfg, p, pw)
 	_mutex.lock()
 	_cal = null
@@ -735,7 +741,7 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 	steps["09b_calibration"] = pwc
 
 	# plausibility vs the class band
-	_say("Grade and report", 0.97)
+	_say("Grade and report", 0.91)
 	var s: float = geo.scale
 	var I0 := 2.0e-3 * (mass / 0.65) * s * s
 	var tau := 0.0
@@ -809,6 +815,25 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 	rep.issues = warns
 	steps["11_grade"] = {"coverage": cov, "gates": rep.gates, "plausibility": rep.plaus, "grade": letter, "caps": caps, "fly_next": fly}
 
+	# 9c optimized tune (grade A/B)
+	var tune := {}
+	if letter in ["A", "B"]:
+		_say("Optimizing the tune", 0.92)
+		var at := Autotune.new()
+		_mutex.lock()
+		_at = at
+		_mutex.unlock()
+		if cancel_flag:
+			at.cancel()
+		at.progress = func(fr: float) -> void: _say("Optimizing the tune", 0.92 + 0.07 * fr)
+		tune = at.run(Craft.package_craft(c), cfg, p, LL, cls)
+		_mutex.lock()
+		_at = null
+		_mutex.unlock()
+		if cancel_flag:
+			return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
+	rep.sec("Optimized tune", ["- " + Autotune.summary(tune.record if bool(tune.get("ok", false)) else tune.get("why", null), letter)])     # (the game's own, as the calibration: not in 'What the logs cover')
+
 	# write
 	rep.runtime = (Time.get_ticks_msec() - t_start) / 1000.0
 	var pkg_craft := Craft.package_craft(c)
@@ -841,11 +866,16 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 		# the last chance to cancel: from here on the package is written and the answer is ok
 		if cancel_flag:
 			return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
-		var bad := nonfinite({"craft.json": pkg_craft, "fc.json": cfg, "plant.json": p, "logfit.json": lf})
+		var jsons := {"craft.json": pkg_craft, "fc.json": cfg, "plant.json": p, "logfit.json": lf}
+		var texts := {"report.md": md}
+		if bool(tune.get("ok", false)):
+			jsons["fc_optimized.json"] = Autotune.optimized_json(tune.fc, json_text(cfg), json_text(p), tune.record)
+			texts["tune.md"] = Autotune.report_md(str(pkg_craft.get("name", "")), cfg, tune.fc, tune.record)
+		var bad := nonfinite(jsons)
 		if bad != "":
 			return _refuse([Checks.issue("nonfinite_value", "error", "the fit produced a value that is not a finite number (%s): the package would be unusable" % bad,
 				"use other logs; if the logs are fine this is a bug in the fit, please report it")], rows_tbl)
-		var werr := _write_package(out_dir, {"craft.json": pkg_craft, "fc.json": cfg, "plant.json": p, "logfit.json": lf}, md, _cancelled)
+		var werr := _write_package(out_dir, jsons, texts, _cancelled)
 		if werr == "cancelled":
 			return _refuse([Checks.issue("cancelled", "error", "cancelled", "")])
 		if werr != "":
@@ -908,6 +938,11 @@ static func _structural_peak(logs: Array, uses: Array) -> Variant:
 	return null
 
 
+## A package's JSON file as written
+static func json_text(d: Dictionary) -> String:
+	return JSON.stringify(d, " ", false, true) + "\n"
+
+
 ## The path of the first NaN / inf in nested dictionaries and arrays ("plant.json/Ixx"), else "" (JSON cannot hold them:
 ## Godot writes NaN as null and inf as 1e99999).
 static func nonfinite(v: Variant, path: String = "") -> String:
@@ -921,10 +956,11 @@ static func nonfinite(v: Variant, path: String = "") -> String:
 	return ""
 
 
-## Writes the package into a temporary folder next to out_dir, then swaps it in: an old package is renamed
-## to <id>.bak beside the temporary folder first, put back if the swap fails, and deleted after it. Every
-## write is checked. "" = ok, "cancelled" (cancel() before the swap: nothing changed), else the error.
-static func _write_package(out_dir: String, jsons: Dictionary, md: String, cancel: Callable = Callable()) -> String:
+## Writes the package (jsons, and texts: report.md, tune.md) into a temporary folder next to out_dir, then swaps
+## it in: an old package is renamed to <id>.bak beside the temporary folder first, put back if the swap fails, and
+## deleted after it. Every write is checked. "" = ok, "cancelled" (cancel() before the swap: nothing changed), else
+## the error.
+static func _write_package(out_dir: String, jsons: Dictionary, md_texts: Dictionary, cancel: Callable = Callable()) -> String:
 	var parent := out_dir.get_base_dir()
 	var tmp_root := parent.get_base_dir().path_join("logfit_tmp")
 	var tmp := tmp_root.path_join(out_dir.get_file())
@@ -932,10 +968,9 @@ static func _write_package(out_dir: String, jsons: Dictionary, md: String, cance
 	_remove_dir(tmp)
 	if DirAccess.make_dir_recursive_absolute(tmp) != OK:
 		return "cannot create %s" % tmp
-	var texts := {}
+	var texts := md_texts.duplicate()
 	for name in jsons:
-		texts[name] = JSON.stringify(jsons[name], " ", false, true) + "\n"
-	texts["report.md"] = md
+		texts[name] = json_text(jsons[name])
 	for name in texts:
 		var err := _write_text(tmp.path_join(name), texts[name])
 		if err != "":

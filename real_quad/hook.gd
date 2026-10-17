@@ -254,9 +254,10 @@ func _max_rate_osd() -> void:
 	_osd_rate_set = true
 
 
-## The vehicle's own settings (propwash, drag, rates) for the model
+## The vehicle's own settings (propwash, drag, rates, tune) for the model
 func _apply_settings(vid: String) -> void:
 	var s: Dictionary = mod.drone_cfg(vid)
+	mod.tune_notes[vid] = model.use_tune(str(s.get("tune", "flown")))
 	model.set_propwash_scale(float(s["propwash"]))
 	var d := float(s["drag"])
 	model.set_linear_drag(d if d > 0.0 else model.get_package_linear_drag())

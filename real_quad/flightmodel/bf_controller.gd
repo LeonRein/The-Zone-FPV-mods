@@ -214,6 +214,7 @@ var I := PackedFloat64Array([0, 0, 0])
 var D := PackedFloat64Array([0, 0, 0])
 var F := PackedFloat64Array([0, 0, 0])
 var pid_sum := PackedFloat64Array([0, 0, 0])
+var pid_inject := PackedFloat64Array([0, 0, 0])   # added to the PID sum (the optimizer's margin chirp; not Betaflight)
 var stabilisation := true
 var iterm_reset := true
 
@@ -1291,7 +1292,7 @@ func pid_controller() -> void:
 		I[a] = i_term
 		D[a] = d_term
 		F[a] = f_term
-		pid_sum[a] = p_term + i_term + d_term + f_term
+		pid_sum[a] = p_term + i_term + d_term + f_term + pid_inject[a]
 	if not stabilisation:
 		for a in 3:
 			P[a] = 0.0; I[a] = 0.0; D[a] = 0.0; F[a] = 0.0; pid_sum[a] = 0.0

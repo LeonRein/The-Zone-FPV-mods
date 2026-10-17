@@ -38,6 +38,29 @@ const CLASSES := {
 ## Every class: ratio bands of the scaled references (contract 4.2).
 const BANDS := {"kT": [0.5, 2.0], "I": [0.4, 2.5], "J_rotor": [0.3, 3.0], "kQ_over_kT": [0.5, 2.0], "rate_damping": [0.0, 5.0]}
 
+## Autotune bounds per class (autotune.gd; the same table in fpvident's classes.py). p, i, ff: multiples of
+## Betaflight 2026.6's defaults (flight/pid.h: P 45/47/45, I 80/84/80, D 30/34/0, D-max 40/46/0, FF 120/125/120 -
+## made for a 5", the start of most presets). d_max: the highest D (D or D-max) as a multiple of the default D-max
+## with the RPM filter on (without it: 1.0): more D mostly amplifies motor noise, which the sim does not have and
+## which heats the motors; bigger props put their noise lower, nearer the D band, so they get less headroom.
+## dp: band of (highest D) / P. The rest absolute: Betaflight's ranges narrowed to what the class flies. A flown
+## value outside a bound widens it (the flown tune flies on the real quad).
+const TUNE_DEFAULT := {"p": [45, 47, 45], "i": [80, 84, 80], "d": [30, 34, 0], "d_max": [40, 46, 0], "ff": [120, 125, 120]}
+const TUNE := {
+	"whoop": {"p": [0.6, 2.0], "i": [0.5, 1.8], "ff": [0.0, 2.0], "d_max": 1.5, "dp": [0.5, 1.5], "tpa_rate": [0, 80],
+		"tpa_breakpoint": [1200, 1750], "dyn_idle_min_rpm": [50, 150], "anti_gravity_gain": [40, 150], "thrust_linear": [0, 50]},
+	"micro": {"p": [0.6, 1.8], "i": [0.5, 1.8], "ff": [0.0, 2.0], "d_max": 1.5, "dp": [0.5, 1.4], "tpa_rate": [0, 80],
+		"tpa_breakpoint": [1200, 1750], "dyn_idle_min_rpm": [35, 100], "anti_gravity_gain": [40, 150], "thrust_linear": [0, 40]},
+	"mini": {"p": [0.6, 1.8], "i": [0.5, 1.8], "ff": [0.0, 2.0], "d_max": 1.5, "dp": [0.5, 1.4], "tpa_rate": [0, 80],
+		"tpa_breakpoint": [1200, 1750], "dyn_idle_min_rpm": [30, 70], "anti_gravity_gain": [40, 150], "thrust_linear": [0, 40]},
+	"five": {"p": [0.6, 1.8], "i": [0.5, 1.8], "ff": [0.0, 2.0], "d_max": 1.5, "dp": [0.5, 1.4], "tpa_rate": [0, 80],
+		"tpa_breakpoint": [1200, 1750], "dyn_idle_min_rpm": [20, 50], "anti_gravity_gain": [40, 150], "thrust_linear": [0, 30]},
+	"seven": {"p": [0.5, 1.6], "i": [0.5, 1.8], "ff": [0.0, 2.0], "d_max": 1.25, "dp": [0.5, 1.3], "tpa_rate": [0, 80],
+		"tpa_breakpoint": [1200, 1750], "dyn_idle_min_rpm": [15, 40], "anti_gravity_gain": [40, 150], "thrust_linear": [0, 25]},
+	"ten": {"p": [0.4, 1.5], "i": [0.5, 1.8], "ff": [0.0, 2.0], "d_max": 1.0, "dp": [0.5, 1.2], "tpa_rate": [0, 80],
+		"tpa_breakpoint": [1200, 1750], "dyn_idle_min_rpm": [10, 35], "anti_gravity_gain": [40, 150], "thrust_linear": [0, 25]},
+}
+
 const PITFALLS := {
 	"whoop": "Many AIO boards run BLHeli_S without bidirectional DShot (flash Bluejay; brushed whoops are impossible). Ducts: kT absorbs the duct's thrust gain at hover, but the prop inflow model and the drag defaults are for open props, so punch and top speed are approximate. Some tiny motors have 12 poles (motor_poles wrong -> every rotor speed and kT wrong). Weigh to 0.1 g. Small flash: 1 kHz without high resolution. 1S sag is large.",
 	"micro": "Cinewhoop ducts as for whoops; a GoPro/naked camera on or off changes the weight by 20-30 %.",

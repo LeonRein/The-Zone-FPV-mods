@@ -292,6 +292,8 @@ func details(id: String) -> Dictionary:
 	var lf := read_json(dir.path_join("logfit.json"))
 	var craft := read_json(dir.path_join("craft.json"))
 	r["report_md"] = FileAccess.get_file_as_string(dir.path_join("report.md"))
+	if FileAccess.file_exists(dir.path_join("tune.md")):
+		r.report_md = FileAccess.get_file_as_string(dir.path_join("tune.md")) + "\n---\n\n" + r.report_md
 	r["grade_meaning"] = str(lf.get("grade_meaning", ""))
 	r["created"] = str(lf.get("created", inputs.get("built", "")))
 	r["inputs_known"] = inputs.has("logs") and inputs.has("form")
