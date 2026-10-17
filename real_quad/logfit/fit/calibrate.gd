@@ -112,6 +112,8 @@ static func stale(plant: Dictionary) -> String:
 		return "the prop wash was not calibrated (%s); dirty_air %s is installed now" % [str(rec.get("why", "")), ver]
 	if was != ver:
 		return "the prop wash was calibrated with dirty_air %s, %s is installed" % [was, ver]
+	if not rec.has("pw_turb_ms"):
+		return "the prop wash was calibrated by an older real_quad (one kick out of a drop instead of the buffeting)"
 	return ""
 
 
