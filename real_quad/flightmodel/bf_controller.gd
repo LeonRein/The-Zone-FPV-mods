@@ -329,7 +329,6 @@ var yaw_reversed: bool
 var pidsum_limit: float
 var pidsum_limit_yaw: float
 var motor := PackedFloat64Array([0, 0, 0, 0])
-var mixer_throttle: float = 0.0
 var motor_mix_range: float = 0.0
 
 var armed := false
@@ -1394,7 +1393,6 @@ func mix_table() -> void:
 	if throttle_boost > 0.0:
 		throttle_lpf_s += throttle_lpf_k * (throttle - throttle_lpf_s)
 		throttle = clampf(throttle + throttle_boost * (throttle - throttle_lpf_s), 0.0, 1.0)
-	mixer_throttle = throttle
 	if dyn_idle_min_rps > 0.0:
 		throttle = maxf(throttle, 0.01)
 	if thrust_lin != 0.0:

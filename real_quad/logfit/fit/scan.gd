@@ -72,12 +72,8 @@ static func inspect(paths: PackedStringArray, builder: Build, pack: String = "")
 			for f in L.info.get("fields", PackedStringArray()):
 				fields[f] = true
 			fws[Checks.parse_firmware(L.headers)[3]] = true
-		var vr := Checks.resting_voltage(L)
-		sessions.append({"file": L.path, "name": L.file, "id": L.name, "index": L.session, "session": L.session,
-			"armed_s": Num.pyround(armed_s, 1), "usable": ok, "reason": reason[L.name] if reason[L.name] != null else "",
-			"firmware": Checks.parse_firmware(L.headers)[3], "acc": L.has_acc(), "vbat": L.has_vbat(),
-			"unfilt": bool(L.info.flags.get("unfilt", false)), "chirp_s": Num.pyround(ch, 1), "log_hz": Num.pyround(L.fs_raw, 1),
-			"resting_v": Num.pyround(vr, 2) if vr > 0.0 else null})
+		sessions.append({"file": L.path, "index": L.session, "armed_s": Num.pyround(armed_s, 1), "usable": ok,
+			"reason": reason[L.name] if reason[L.name] != null else ""})
 	if armed_total > Checks.MAX_ARMED_S:
 		errs.append(Checks.issue("too_much", "error", "%d min of armed flight (at most 60 min per run): pick fewer logs" % roundi(armed_total / 60.0), "pick fewer logs"))
 	if not pack in ["lipo", "lihv", "liion"]:
@@ -122,7 +118,5 @@ static func inspect(paths: PackedStringArray, builder: Build, pack: String = "")
 			warns.append(Checks.issue("no_unfilt", "info", "Unfiltered gyro (gyroUnfilt) is not logged in every session: the rotation fit uses the filtered gyro there", Checks.FIX.unfilt))
 	var fwl: Array = fws.keys()
 	fwl.sort()
-	return {"ok": errs.is_empty() and not used.is_empty(), "firmware": " / ".join(fwl), "firmwares": fwl, "sessions": sessions,
-		"fields": fields.keys(), "prefill": prefill, "errors": errs, "warnings": warns,
-		"armed_s": Num.pyround(armed_total, 1), "chirp_s": Num.pyround(chirp_s, 1),
-		"files": files.map(func(e): return {"path": e.path, "name": e.name, "size": e.size, "sessions": e.sessions.size(), "error": e.error})}
+	return {"ok": errs.is_empty() and not used.is_empty(), "firmware": " / ".join(fwl), "sessions": sessions,
+		"fields": fields.keys(), "prefill": prefill, "errors": errs, "warnings": warns}

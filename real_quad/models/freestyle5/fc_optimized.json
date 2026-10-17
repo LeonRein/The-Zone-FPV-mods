@@ -150,7 +150,7 @@
  "motor_kv": 1855.0,
  "_tune": {
   "fc_sha256": "e1a0035fd0a1da8cd0e020606b45b0453758bd25783585e6dde0ba5c268b6c56",
-  "plant_sha256": "2ebdd20de300418459dfa9755ac0d5b56785ab8178c1ae57c7c6ea12d6d4cca5",
+  "plant_sha256": "d0ad5e5c784cb1370bab2ff94be991cef49145fcc7273e310dce403a21ac045b",
   "created": "2026-10-17T09:01:33+00:00",
   "record": {
    "class": "five",

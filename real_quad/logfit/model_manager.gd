@@ -24,7 +24,6 @@ extends RefCounted
 signal finished(record: Dictionary)
 
 const LOGFIT := "res://real_quad/logfit/logfit.gd"
-const LOG_EXTS := ["bbl", "bfl", "txt"]
 const INPUTS := "inputs.json"
 const GRADE_RE := "^## Grade ([A-D])"
 const CALIBRATE := "res://real_quad/logfit/fit/calibrate.gd"
@@ -549,7 +548,6 @@ func _run(job: Job, id: String, form: Dictionary, add: Array, keep: Array, old_l
 		paths.append(ProjectSettings.globalize_path(e.path))
 	var out := work.path_join("building").path_join(id)
 	var fform := form.duplicate(true)
-	fform.erase("overwrite")
 	var prog := func(step: String, frac: float): job.progress(step, 0.01 + 0.98 * frac)
 	var res: Dictionary = job.logfit.build(paths, fform, out, prog)
 	res["notes"] = notes
@@ -602,7 +600,6 @@ func _run(job: Job, id: String, form: Dictionary, add: Array, keep: Array, old_l
 		return fail.call("Cannot put the new package in place (%s)." % old_dir)
 	remove_dir(aside)
 	remove_dir(stage)
-	res["package_dir"] = old_dir
 	return res
 
 

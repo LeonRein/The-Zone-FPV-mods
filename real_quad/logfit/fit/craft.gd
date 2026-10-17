@@ -29,10 +29,7 @@ const REFERENCE := {
 	"cd_area": [0.00978, 0.01172, 0.02947],
 	"rotor_drag_per_s": 0.40,
 	"battery_r": 0.0825,
-	"wake": {"wake_dt": 0.01, "wake_life": 2.5, "wake_min_age": 0.06, "wake_r0": 0.12, "wake_growth": 0.35,
-		"wake_slip_factor": 1.6, "wake_decel": 1.5, "wake_cap": 1.0, "wake_gain": 0.35},
 	"turb_base_ms": 0.31, "pw_turb_ms": 3.8, "pw_noise_hz": 25.0,
-	"vrs": {"vrs_center": 1.0, "vrs_width": 0.5, "vrs_loss": 0.25},
 }
 
 
@@ -200,8 +197,6 @@ static func defaults(c: Dictionary, kT: float = -1.0) -> Dictionary:
 	var cd: Array = []
 	for x in REFERENCE.cd_area:
 		cd.append(float(x) * s * s)
-	var wake: Dictionary = REFERENCE.wake.duplicate()
-	wake.wake_r0 = float(REFERENCE.wake.wake_r0) * s
 	var d := {
 		"Ixx": ixx, "Iyy": ixx, "Izz": REFERENCE.Izz_over_Ixy * ixx,
 		"kT": REFERENCE.kT * s4,
@@ -214,13 +209,7 @@ static func defaults(c: Dictionary, kT: float = -1.0) -> Dictionary:
 		"turb_base_ms": _round(REFERENCE.turb_base_ms * vr, 3), "pw_turb_ms": _round(REFERENCE.pw_turb_ms * vr, 2),
 		"v_induced_ratio": vr,
 		"pw_noise_hz": REFERENCE.pw_noise_hz,
-		"wake": wake,
-		"vrs": REFERENCE.vrs.duplicate(),
 	}
-	var cls: String = str(c.get("class")) if c.get("class") != null else "five"
-	var da_cls := cls if Classes.CLASSES[cls].has("dirty_air") else Classes.nearest_validated(cls)
-	d.dirty_air = Classes.CLASSES[da_cls].dirty_air.duplicate()
-	d.dirty_air_from = da_cls
 	if kT >= 0.0:
 		d.kQ = REFERENCE.kQ_over_kT * s * kT
 	return d

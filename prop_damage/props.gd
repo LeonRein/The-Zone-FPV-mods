@@ -149,7 +149,6 @@ var _spawn_last := Vector3.ZERO
 var _have_spawn := false
 var _at_spawn := false
 # a flight model that flies the quad itself (real_quad) calls set_model() each tick
-const BF_OF := [3, 1, 2, 0]     # a prop (the order of NAMES) -> that corner's motor in Betaflight's order, and back
 var _model_frame := -100
 var _model_spin := [0.0, 0.0, 0.0, 0.0]
 
@@ -242,7 +241,7 @@ func factor_at(local: Vector3) -> float:
 ## with the spin handed over. Nothing changes for a quad no model flies.
 func set_model(spin: Array) -> Dictionary:
 	_model_frame = Engine.get_physics_frames()
-	# (BF_OF written out: this is called every physics tick)
+	# prop i (the order of NAMES) is motor [3, 1, 2, 0][i] in Betaflight's order, and back
 	var ok := spin.size() >= 4
 	_model_spin[0] = float(spin[3]) if ok else 0.0
 	_model_spin[1] = float(spin[1]) if ok else 0.0

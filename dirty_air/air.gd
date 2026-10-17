@@ -61,7 +61,7 @@ extends Node
 ## model's thrust, props and frame, and the drone's wash and wake, and for
 ## the next tick dirty_air works out the air for it instead - the old wake's
 ## flow and gusts at each prop (prop_axial, wake_flow), the descent curve
-## and ring state (descent_mean, prop_vrs), floor and ceiling (ground,
+## and ring state (descent_mean), floor and ceiling (ground,
 ## ceiling) - which the model puts into its own props. Then it applies no
 ## forces and no shake (the model's flight controller shakes for real).
 ## Stop calling it and the quad is the game's again, as before.
@@ -122,7 +122,6 @@ var puffs := 0                  # puffs of wake alive
 # the tick model_air_frame (Engine.get_physics_frames()), not while disarmed
 var descent_mean := 1.0         # mean thrust ratio from the descent and ring state (without the old wake's flow)
 var prop_axial := [0.0, 0.0, 0.0, 0.0]  # air speed along the thrust axis at each prop beyond the centre's (wake_flow): the old wake's flow there and its gusts (m/s, + = up through the prop)
-var prop_vrs := [0.0, 0.0, 0.0, 0.0]    # each prop's thrust fluctuation in its own wake (fraction, mean 0)
 var model_air_frame := -1
 var _model := {}                # the last set_model()
 var _model_frame := -10
@@ -201,10 +200,9 @@ static func describe(d: Dictionary) -> String:
 ## For a flight model of another mod that flies the quad itself (real_quad),
 ## every physics tick: m has thrust (N, all props, from its last tick),
 ## prop_mm, wheelbase_mm, ducted (its quad's, in place of the drones mod's),
-## wash and wake (the drone's own, in place of 1; times settings.cfg's), and
-## gust (times the old wake's turbulence, WAKE_TURB; default 1). On
-## the next tick dirty_air leaves the body alone and works out the air for
-## the model (descent_mean, prop_axial, prop_vrs, wake_flow, ground,
+## and wash and wake (the drone's own, in place of 1; times settings.cfg's).
+## On the next tick dirty_air leaves the body alone and works out the air for
+## the model (descent_mean, prop_axial, wake_flow, wash_level, ground,
 ## ceiling; model_air_frame says which tick). Not calling it for a tick
 ## hands the quad back.
 func set_model(m: Dictionary) -> void:
@@ -221,12 +219,12 @@ func model_flown() -> bool:
 ## a flight model can fly a made-up flight through this air on its own
 ## (real_quad's model builder does, to size its prop wash on the pilot's
 ## logs). free_start() takes the model's message as set_model() does
-## (prop_mm, wheelbase_mm, ducted, wash, wake, gust) and a seed, with this
+## (prop_mm, wheelbase_mm, ducted, wash, wake) and a seed, with this
 ## mod's own figures (not settings.cfg's) and no wake yet; then each tick
 ## free_tick() takes the message again (thrust) and where the quad is and
 ## how fast it flies, and works out its air for the next tick as for a
-## model flown in the game (descent_mean, prop_axial, prop_vrs, wake_flow,
-## wash_level) - high in the open: no floor, no ceiling, wind only if given.
+## model flown in the game (descent_mean, prop_axial, wake_flow,
+## wash_level) - high in the open: no floor, no ceiling, no wind.
 ## Not for a node in the game's tree.
 func free_start(m: Dictionary, rng_seed: int) -> void:
 	cfg = DEFAULTS.duplicate()
@@ -246,11 +244,11 @@ func free_start(m: Dictionary, rng_seed: int) -> void:
 	_gust_all = 0.0
 
 
-func free_tick(m: Dictionary, gt: Transform3D, lv: Vector3, dt: float, wind := Vector3.ZERO) -> void:
+func free_tick(m: Dictionary, gt: Transform3D, lv: Vector3, dt: float) -> void:
 	_model = m
 	_clock += dt
 	_tick += 1
-	_air_at(gt, lv, wind, maxf(float(m.get("thrust", 0.0)), 0.0), dt, true, null)
+	_air_at(gt, lv, Vector3.ZERO, maxf(float(m.get("thrust", 0.0)), 0.0), dt, true, null)
 
 
 ## The drone flown: the drones mod's figures for it (an added drone's from
@@ -534,7 +532,6 @@ func _physics_process(dt: float) -> void:
 		descent_mean = 1.0
 		for i in 4:
 			prop_axial[i] = 0.0
-			prop_vrs[i] = 0.0
 		_flying = false
 		_unshake(body)
 		return
@@ -546,7 +543,7 @@ func _physics_process(dt: float) -> void:
 
 
 ## The air for one tick of an armed quad at gt flying at lv with this thrust: for a flight model (ext)
-## into descent_mean, prop_axial, prop_vrs, ..., else as forces on body. Without a body (free_tick())
+## into descent_mean, prop_axial, ..., else as forces on body. Without a body (free_tick())
 ## there is no floor or ceiling.
 func _air_at(gt: Transform3D, lv: Vector3, windv: Vector3, thrust: float, dt: float, ext: bool, body: RigidBody3D) -> void:
 	var origin := gt.origin
@@ -645,7 +642,6 @@ func _air_at(gt: Transform3D, lv: Vector3, windv: Vector3, thrust: float, dt: fl
 	var sqrt2 := sqrt(2.0)
 	var sqrt_vrs_a := sqrt(1.0 - VRS_TILT)
 	var sqrt_vrs_b := sqrt(VRS_TILT)
-	var gust_k := WAKE_TURB * float(_model.get("gust", 1.0))
 	for i in 4:
 		var at: Vector3 = pts[i + 1]
 		var g := 1.0
@@ -670,15 +666,14 @@ func _air_at(gt: Transform3D, lv: Vector3, windv: Vector3, thrust: float, dt: fl
 		var sg := minf(slope * WAKE_TURB * edge[i + 1] * ws * wash * rough / vh, 1.0)
 		_gust[i] += -_gust[i] * kg + sg_noise * _rng.randfn(0.0, 1.0)
 		gusts += sg * 0.25
+		if ext:
+			# for the model: the air itself (its flow and gusts along the axis, m/s); the model's props turn it
+			# into thrust
+			prop_axial[i] = (here - wake_flow).dot(up) + WAKE_TURB * edge[i + 1] * ws * wash * rough * (sh_a * _gust_all + sh_b * _gust[i])
+			continue
 		var lp: Vector3 = _local[i]
 		var side := Vector2(signf(lp.x), signf(lp.z)) / sqrt2
 		var vrs: float = sqrt_vrs_a * _noise[i] + sqrt_vrs_b * _tilt.dot(side)
-		if ext:
-			# for the model: the air itself (its flow and gusts along the axis, m/s), and the ring
-			# state's fluctuation; the model's props turn them into thrust
-			prop_axial[i] = (here - wake_flow).dot(up) + gust_k * edge[i + 1] * ws * wash * rough * (sh_a * _gust_all + sh_b * _gust[i])
-			prop_vrs[i] = sigma * vrs
-			continue
 		var inflow := clampf(1.0 - slope * (here - wake_flow).dot(-up) / vh, 0.3, 2.0)
 		var gust: float = sg * (sh_a * _gust_all + sh_b * _gust[i])
 		var ratio: float = mean * (1.0 + sigma * vrs) * inflow * clampf(1.0 + gust, 0.0, 2.0) * ground[i] * ceiling[i]

@@ -264,11 +264,11 @@ class Problem extends RefCounted:
 		var o := 2 * nb
 		for k in npass:
 			for q in 3:
-				out[o + 3 * k + q] = x[2 + 5 * k + q] / 3.0 * 0.5
+				out[o + 3 * k + q] = x[2 + 5 * k + q] / V0_SD * PRIOR_W
 		o += 3 * npass
 		for k in npass:
 			for q in 2:
-				out[o + 2 * k + q] = x[2 + 5 * k + 3 + q] / (8.0 * PI / 180.0) * 0.5
+				out[o + 2 * k + q] = x[2 + 5 * k + 3 + q] / TILT_SD * PRIOR_W
 		return out
 
 
@@ -393,7 +393,7 @@ static func _lm(pb: Problem, x0: PackedFloat64Array, lb: PackedFloat64Array, ub:
 			var gv: PackedFloat64Array = gk[k]
 			for q in 5:
 				var row := o + (3 * k + q if q < 3 else 3 * pb.npass + 2 * k + q - 3)
-				var dv := (0.5 / V0_SD if q < 3 else 0.5 / TILT_SD) * w[row]
+				var dv := (PRIOR_W / V0_SD if q < 3 else PRIOR_W / TILT_SD) * w[row]
 				H[5 * q + q] += dv * dv
 				gv[q] += dv * fs[row]
 			for p in 5:

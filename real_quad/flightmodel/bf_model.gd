@@ -19,7 +19,6 @@ extends RefCounted
 const Controller := preload("bf_controller.gd")
 const Quad := preload("bf_quad.gd")
 
-const USE_RPM_FILTER := true
 const CELL_FULL_LIPO := 4.2          # a full cell at rest [V]: the identified battery_v0 is a full pack's
 const CELL_FULL_LIHV := 4.35
 # Betaflight's motor index (0 rear right, 1 front right, 2 rear left, 3 front left) ->
@@ -116,7 +115,7 @@ static func _load_json(path: String) -> Dictionary:
 
 
 func _new_controller() -> void:
-	fc = Controller.new(fc_cfg, USE_RPM_FILTER)
+	fc = Controller.new(fc_cfg)
 	var delay_steps := maxi(1, roundi(float(plant_params.get("motor_delay_s", 0.001)) / fc.dt))
 	_mq_n = delay_steps
 	_mq.resize(4 * _mq_n)
@@ -257,12 +256,6 @@ func full_rpm() -> float:
 	return _full_w * 60.0 / TAU
 
 
-## Thrust factor of the rotor at Betaflight motor index i (0 rear right, 1 front right, 2 rear
-## left, 3 front left): 1 = none. Set by the host every tick.
-func set_thrust_scale(i: int, v: float) -> void:
-	quad.thrust_scale[i] = v
-
-
 ## The props' condition from prop_damage (its set_model()), each in Betaflight's motor order: thrust factor
 ## (1 = new, 0 = broken off) into the rotor's thrust, and the out-of-balance (0..1) shaking the gyro
 ## the flight controller reads - so its PID reacts as on a quad with a bent prop.
@@ -312,24 +305,6 @@ func set_propwash_scale(v: float) -> void:
 
 
 # ------------------------------------------------------------------ air (dirty_air)
-## dirty_air's wash and wake for this quad (plant.json dirty_air_wash / dirty_air_wake; 1 = dirty_air's own
-## figures, what the log fit's calibration uses), times the drone's propwash setting: wash sizes
-## how rough its air is (wash_level: the model's buffeting there, bf_quad.gd pw_turb_ms) and the gusts,
-## wake the air left behind.
-func get_air_wash() -> float:
-	return float(plant_params.get("dirty_air_wash", 1.0)) * propwash_scale
-
-
-func get_air_wake() -> float:
-	return float(plant_params.get("dirty_air_wake", 1.0)) * propwash_scale
-
-
-## The turbulence of dirty_air's old wake for this quad, as a multiple of its own (plant.json
-## dirty_air_gust, the class's; not scaled by propwash, which scales it through the wash and wake already).
-func get_air_gust() -> float:
-	return float(plant_params.get("dirty_air_gust", 1.0))
-
-
 ## The attitude b turned by the rotation vector rot [rad]: about its own axes, or about the world's (world)
 static func turn(b: Basis, rot: Vector3, world := false) -> Basis:
 	var angle := rot.length()
@@ -338,7 +313,10 @@ static func turn(b: Basis, rot: Vector3, world := false) -> Basis:
 	return Basis(rot / angle, angle) * b if world else b * Basis(rot / angle, angle)
 
 
-## This quad's message to dirty_air (its thrust, props, frame, wash, wake and gust), the same dictionary each call
+## This quad's message to dirty_air (its thrust, props, frame, wash and wake), the same dictionary each call. Wash and
+## wake are dirty_air's own figures (what the log fit's calibration uses) times the drone's propwash setting: wash sizes
+## how rough its air is (wash_level: the model's buffeting there, bf_quad.gd pw_turb_ms) and the gusts, wake the air
+## left behind; its gust stays its own.
 func air_msg() -> Dictionary:
 	var q := quad
 	var th := q.thrust
@@ -347,9 +325,8 @@ func air_msg() -> Dictionary:
 	m["prop_mm"] = q.prop_radius * 2000.0
 	m["wheelbase_mm"] = q.arm * 2.0 * sqrt(2.0) * 1000.0
 	m["ducted"] = bool(craft.get("ducted", false))
-	m["wash"] = get_air_wash()
-	m["wake"] = get_air_wake()
-	m["gust"] = get_air_gust()
+	m["wash"] = propwash_scale
+	m["wake"] = propwash_scale
 	return m
 
 
@@ -402,7 +379,7 @@ func _k_volts() -> float:
 
 
 ## The identified sag as a cell's internal resistance [ohm]. The identification's sag is
-## battery_r * current_proxy (model volts); the model's current is the rotors' power over the drive
+## battery_r * the current proxy (model volts); the model's current is the rotors' power over the drive
 ## efficiency. Their ratio is taken at full throttle, hovering in still air (where the sag matters;
 ## at hover the absolute difference is a few hundredths of a volt).
 func identified_cell_ohm() -> float:

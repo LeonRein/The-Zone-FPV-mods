@@ -4,7 +4,7 @@ extends RefCounted
 ## no map, high in the open), shakes as much as the logs say:
 ##   pw_turb_ms      the model's turbulence in its own wake (bf_quad.gd) <- the logs' worst_p99, scenario "dropcatch"
 ##   turb_base_ms    the model's calm-air turbulence                     <- the logs' calm median, scenario "calm"
-## dirty_air's wash, wake and gust stay as the class has them (its physics as its author made it).
+## dirty_air's wash, wake and gust stay its own (its physics as its author made it).
 ##
 ## The scenarios are those of the propwash test (workspace tests/godot/tests/propwash_test.gd, analysed by
 ## tests/analyze_propwash.py), flown here without Godot physics: a level hover at 60 m found by a PD
@@ -67,11 +67,8 @@ static func targets(metric: Dictionary) -> Dictionary:
 		"calm": float(calm) if calm != null and int(n[0]) >= MIN_CALM else null}
 
 
-## Puts the record's values into the plant (wash and wake 1, the class's gust, both turbulences, the record)
+## Puts the record's values into the plant (both turbulences, the record)
 static func apply(p: Dictionary, rec: Dictionary) -> void:
-	p.dirty_air_wash = 1.0
-	p.dirty_air_wake = 1.0
-	p.dirty_air_gust = rec.gust
 	p.pw_turb_ms = rec.pw_turb_ms
 	p.turb_base_ms = rec.turb_base_ms
 	p.dirty_air_calibration = rec
@@ -120,14 +117,13 @@ static func stale(plant: Dictionary) -> String:
 ## Calibrates. craft, fc, plant: the package's dictionaries (craft.json, fc.json, plant.json); metric: the
 ## log metric. Returns the record for plant.json "dirty_air_calibration":
 ## {state: calibrated | partial | skipped, why, dirty_air_version, targets, scenario {dropcatch, calm},
-##  gust, pw_turb_ms, turb_base_ms, seeds, runs, runtime_s} - the values are the class defaults where not calibrated.
+##  pw_turb_ms, turb_base_ms, seeds, runs, runtime_s} - the values are the class defaults where not calibrated.
 func run(craft: Dictionary, fc: Dictionary, plant: Dictionary, metric: Dictionary) -> Dictionary:
 	var t0 := Time.get_ticks_msec()
 	var ver := dirty_air_version()
 	var tg := targets(metric)
 	var rec := {"state": "skipped", "why": "", "dirty_air_version": ver, "targets": tg, "scenario": {"dropcatch": null, "calm": null},
-		"gust": plant.get("dirty_air_gust", 1.0), "pw_turb_ms": plant.get("pw_turb_ms", 0.0), "turb_base_ms": plant.get("turb_base_ms", 0.0),
-		"seeds": n_seeds, "runs": 0,
+		"pw_turb_ms": plant.get("pw_turb_ms", 0.0), "turb_base_ms": plant.get("turb_base_ms", 0.0), "seeds": n_seeds, "runs": 0,
 		"calibrated": [], "runtime_s": 0.0}
 	if ver == "":
 		rec.why = "dirty_air is not installed"
@@ -147,10 +143,8 @@ func run(craft: Dictionary, fc: Dictionary, plant: Dictionary, metric: Dictionar
 	var dflt := Craft.defaults(craft)
 	plant = plant.duplicate()
 	plant.turb_base_ms = dflt.turb_base_ms
-	plant.dirty_air_gust = dflt.dirty_air.gust
 	plant.pw_turb_ms = dflt.pw_turb_ms
 	rec.turb_base_ms = plant.turb_base_ms
-	rec.gust = plant.dirty_air_gust
 	rec.pw_turb_ms = plant.pw_turb_ms
 	var sims: Array = _sims(craft, fc, plant)
 	if sims.is_empty():
@@ -166,8 +160,6 @@ func run(craft: Dictionary, fc: Dictionary, plant: Dictionary, metric: Dictionar
 
 func _calibrate(sims: Array, plant: Dictionary, tg: Dictionary, rec: Dictionary) -> void:
 	var p := plant.duplicate()
-	p.dirty_air_wash = 1.0
-	p.dirty_air_wake = 1.0
 	var n_steps := (MAX_EVAL if tg.calm != null else 1) + (MAX_EVAL if tg.dropcatch != null else 1)
 	var done := [0]
 	var tick := func() -> void:
@@ -355,7 +347,7 @@ class Sim:
 		st.free()
 
 	func set_plant(p: Dictionary) -> void:
-		for k in ["dirty_air_wash", "dirty_air_wake", "dirty_air_gust", "pw_turb_ms", "turb_base_ms"]:
+		for k in ["pw_turb_ms", "turb_base_ms"]:
 			model.plant_params[k] = p[k]
 		model.quad.turb_base_ms = float(p.turb_base_ms)
 		model.quad.pw_turb_ms = float(p.pw_turb_ms)
