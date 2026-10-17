@@ -350,10 +350,6 @@ func _root() -> String:
 	return mm.root if mm != null else "user://real_quad/models"
 
 
-func _models_path() -> String:
-	return ProjectSettings.globalize_path(_root())
-
-
 func _refresh_overview() -> void:
 	if _ov_list == null or mm == null:
 		return
@@ -1037,9 +1033,6 @@ func _prefill() -> void:
 	if nm != "" and not _touched.get("name", false):
 		(_ctl["name"] as LineEdit).text = nm.substr(0, 40)
 		_mark("name", "from the log, check")
-	if p.has("class") and not _touched.get("class", false) and str(p["class"]) in CLASS_ORDER:
-		(_ctl["class"] as OptionButton).select(CLASS_ORDER.find(str(p["class"])))
-		_class_changed(false)
 	if p.has("pack_type") and not _touched.get("pack_type", false):
 		var i := PACKS.keys().find(str(p["pack_type"]))
 		if i >= 0:
@@ -1106,9 +1099,9 @@ func _refresh() -> void:
 		var ok := 0
 		var secs := 0.0
 		for s in sessions:
-			if s is Dictionary and bool(s.get("usable", s.get("used", true))):
+			if s is Dictionary and bool(s.usable):
 				ok += 1
-				secs += float(s.get("armed_s", s.get("flight_s", s.get("duration_s", 0.0))))
+				secs += float(s.get("armed_s", 0.0))
 		var fw := str(info.get("firmware", ""))
 		_files_box.add_child(_label("%d session%s usable%s%s" % [ok, "" if ok == 1 else "s",
 			", %.1f min of flight" % (secs / 60.0) if secs > 0.0 else "", ", " + fw if fw != "" else ""], 0.95, GROUP))
@@ -1133,10 +1126,10 @@ func _refresh() -> void:
 
 
 func _session_line(s: Dictionary) -> Control:
-	var usable := bool(s.get("usable", s.get("used", true)))
-	var reason := str(s.get("reason", s.get("note", "")))
-	var dur := float(s.get("armed_s", s.get("flight_s", s.get("duration_s", -1.0))))
-	var t := "   session %s" % str(s.get("index", s.get("session", "")))
+	var usable := bool(s.usable)
+	var reason := str(s.get("reason", ""))
+	var dur := float(s.get("armed_s", -1.0))
+	var t := "   session %s" % str(s.index)
 	if dur >= 0.0:
 		t += ", %d s armed" % int(round(dur))
 	t += ": " + ("ok" if usable else "skipped") + (" - " + reason if reason != "" else "")

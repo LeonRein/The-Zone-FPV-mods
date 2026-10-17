@@ -127,7 +127,7 @@ FLIGHT MODELS (real_quad)
   A quad another mod flies with a flight model of its own (real_quad) is not
   pushed by dirty_air: that mod calls set_model() on dirty_air's Air node
   every physics tick (the model's thrust, props and frame, and the drone's
-  wash, wake and gust), and dirty_air works out the air at each prop for it
+  wash and wake), and dirty_air works out the air at each prop for it
   - the old wake's flow and gusts, the descent curve and ring state, the
   floor and ceiling - which the model puts into its own props (see air.gd).
   No forces and no shake then (shake= does nothing for such a drone: the

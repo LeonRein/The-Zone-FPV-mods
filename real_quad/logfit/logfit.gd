@@ -4,24 +4,22 @@ extends RefCounted
 ##
 ##   var lf = preload("res://real_quad/logfit/logfit.gd").new()
 ##   var info: Dictionary = lf.inspect(paths, pack_type = "")   # pack_type of the form if known (lipo | lihv | liion)
-##       {ok, firmware (text), sessions [{file, id, index, armed_s, usable, reason, firmware, acc, vbat,
-##        unfilt, chirp_s, log_hz, resting_v}], fields [main field names of the usable sessions],
-##        prefill {cells: {value, check, note} | null, kv: {value, check, note} | null, motor_poles,
-##        craft_name, pack_type}, errors, warnings, armed_s, chirp_s, files}
+##       {ok, firmware (text), sessions [{file, index, armed_s, usable, reason}], fields [main field names
+##        of the usable sessions], prefill {cells: {value, check, note} | null, kv: {value, check, note} | null,
+##        motor_poles, craft_name, pack_type}, errors, warnings}
 ##   var res: Dictionary = lf.build(paths, form, out_dir, progress)
-##       {ok, grade, errors, warnings, report_md, package_dir, model_id} (+ grade_meaning, fly_next,
-##        cli, banners, runtime_s, propwash_calibration: the prop wash line of the report)
+##       {ok, grade, errors, warnings, report_md, package_dir, model_id} (+ propwash_calibration: the prop
+##        wash line of the report)
 ##   lf.cancel()                    # from any thread: build() returns within about a second, writes nothing
 ##                                  (a cancel that comes once the package is being moved in place is too late:
 ##                                  build() then answers ok); a cancel before a job starts cancels that job
 ##
 ## form (the window's, logfit/window.gd): name, weight_g, cells, pack_type (lipo | lihv | liion), kv,
 ## class, zone_vehicle_id and optionally capacity_mah, prop_in, pitch_in, blades, wheelbase_mm,
-## top_speed_kmh, ducted, same_quad, overwrite. The contract's layout (mass_kg, prop {diameter_in,
+## top_speed_kmh, ducted, same_quad. The contract's layout (mass_kg, prop {diameter_in,
 ## pitch_in, blades}, battery {capacity_mah}) is read as well.
 ## out_dir is the package folder (e.g. user://real_quad/models/<id>); its name is the model id. It is
-## written through a temporary folder next to the models root and replaces an existing package only
-## with form.overwrite.
+## written through a temporary folder next to the models root and replaces an existing package.
 ## Errors and warnings are {text, fix, big, overridable, code, level}; big = a banner (missing
 ## accelerometer, chirps or battery voltage), overridable = lifted by form.same_quad.
 ## progress.call(step_name: String, fraction: float) runs on the worker thread.
@@ -93,23 +91,14 @@ func _build(job: Build, paths: PackedStringArray, form: Dictionary, out_dir: Str
 	var re := RegEx.create_from_string("^[a-z0-9_]{1,32}$")
 	if id != "" and re.search(id) != null:
 		c.id = id
-	var fail := func(code: String, text: String, fix: String) -> Dictionary:
-		return {"ok": false, "grade": "", "errors": [{"text": text, "fix": fix, "big": false, "overridable": false, "code": code, "level": "error"}],
-			"warnings": [], "report_md": "", "package_dir": "", "model_id": str(c.get("id", ""))}
-	if out_dir != "" and DirAccess.dir_exists_absolute(out_dir) and not bool(form.get("overwrite", false)):
-		return fail.call("exists", "a model \"%s\" exists already" % id, "tick \"replace it\" or pick another name")
-	for b in form.get("builtin_ids", []):
-		if str(b) == str(c.get("id", "")):
-			return fail.call("id_reserved", "\"%s\" is a model that comes with real_quad" % b, "pick another name (%s_2?)" % b)
 	var r := job.run(c, paths, out_dir, bool(form.get("same_quad", false)))
 	var warns: Array = r.get("warnings", []).map(func(e): return message(e))
 	for b in r.get("banners", []):
 		warns.push_front({"text": b, "fix": "", "big": true, "overridable": false, "code": "banner", "level": "warning"})
 	var out := {"ok": bool(r.ok), "grade": r.get("grade", ""), "errors": r.errors.map(func(e): return message(e)), "warnings": warns,
 		"report_md": r.get("report_md", ""), "package_dir": r.get("package_dir", "") if r.ok else "", "model_id": str(r.get("model_id", c.get("id", "")))}
-	for k in ["grade_meaning", "fly_next", "cli", "runtime_s", "propwash_calibration"]:
-		if r.has(k):
-			out[k] = r[k]
+	if r.has("propwash_calibration"):
+		out["propwash_calibration"] = r.propwash_calibration
 	return out
 
 

@@ -56,8 +56,7 @@ Form: 0.3 kg, 4S lipo, 3650 KV, prop 3.5" × 2.5" × 3, class mini, top speed un
 | Motor distance (arm) | 55 mm | 80 mm × D/5.1" (only the absolute inertias depend on it) |
 | Izz | 0.000758 kg·m² | 1.7 × mean roll/pitch inertia (only J_rotor/Izz is measured) |
 | Body drag | cd_area [0.00461, 0.00552, 0.0139] | reference × (D/5.1")² |
-| dirty_air wash/wake/gust | 1.0/1.0/1.0 | dirty_air's own figures |
-| Wake/turbulence/VRS | turb 0.307 / 3.76 m/s | reference scaled physically (calibrated in the game) |
+| Turbulence | turb 0.307 / 3.76 m/s | reference scaled physically (calibrated in the game) |
 | dirty_air wash/wake | 1/1 | dirty_air's own figures |
 
 ## Plausibility vs. the mini class band
@@ -148,7 +147,7 @@ Per session (×10⁻³): LOG00001#1 [0.69, -3.75, 1.35], mini_03_freestyle#1 [0.
 
 ## Battery
 Source: vbat. V = V0 − R·I (I = the sim's current proxy). V0 per session: {'LOG00001#1': 15.95, 'LOG00002#1': 15.4, 'LOG00003#1': 15.53, 'mini_03_freestyle#1': 15.49, 'mini_04_freestyle_chirp5#1': 15.32, 'mini_05_crash#1': 15.87, 'mini_08_freestyle#1': 15.29, 'mini_09_freestyle#1': 15.43, 'mini_10_freestyle#1': 15.43}.
-battery_v0 = 15.95 V (freshest pack), battery_r = 0.128, discharge fitted 0.265 V/min (exported as 0: the game simulates only the sag), RMS 0.17 V.
+battery_v0 = 15.95 V (freshest pack), battery_r = 0.128, discharge fitted 0.265 V/min (not exported: the game simulates only the sag), RMS 0.17 V.
 
 ## Drag and top speed
 ACC dead reckoning: 16 passes from hover (each up to 5 s, start velocity and tilt fitted too: RMS 2.1 m/s, 14°), 244 blocks of 0.25 s, speed p50/p90/p99 [8.3, 19.6, 23.6] m/s. Fit R² 0.77: rotor drag 0.33 1/s (±4.9 %), body scale 0.055 (±2.3e+02 %).
@@ -157,8 +156,7 @@ Top speed of the model (full throttle, level, fresh pack with sag): **115 km/h**
 
 ## Propwash / turbulence
 Log metric (15–78 Hz roll/pitch tracking error, deg/s, median): calm 0.79, after throttle chops 0.95, flips after chops 3.87; 99th percentile of all usable windows outside chirps 11.52 (windows (4962, 898, 144, 10940)). Targets of the prop wash calibration in the game (real_quad: drop and catch = 1.283 × p99, calm = the calm median).
-dirty_air wash/wake/gust 1.0/1.0/1.0 from the mini class.
-Wake/turbulence amplitudes of the Python plant: reference values scaled with the induced velocity (factor 0.99): turb_base_ms 0.307, pw_turb_ms 3.76, wake_r0 0.0824 m.
+Turbulence amplitudes (class values): reference values scaled with the induced velocity (factor 0.99): turb_base_ms 0.307, pw_turb_ms 3.76.
 
 ## Validation
 Hover: motor command sim 0.300 / log 0.295, rotor 231 / 231 Hz (model voltage 14.61 V).

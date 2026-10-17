@@ -829,18 +829,6 @@ static func time_constant(P: Array, w: PackedFloat64Array, kv_rad: float) -> Pac
 	return o
 
 
-## Rotor speed [rad/s] per motor in steady state for command u at voltage V.
-static func steady_speed(P: Array, u: float, V: float, kv_rad: float) -> PackedFloat64Array:
-	var o := PackedFloat64Array()
-	for m in 4:
-		var a: float = P[m][0]
-		var b: float = P[m][1]
-		var c: float = P[m][2]
-		var rhs := a * u * V - c
-		o.append(maxf((-(a / kv_rad) + sqrt((a / kv_rad) * (a / kv_rad) + 4.0 * b * maxf(rhs, 0.0))) / (2.0 * b), 0.0))
-	return o
-
-
 static func command_for_speed(P: Array, w: float, V: float, kv_rad: float) -> PackedFloat64Array:
 	var o := PackedFloat64Array()
 	for m in 4:

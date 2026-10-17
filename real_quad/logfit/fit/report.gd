@@ -14,7 +14,6 @@ var plaus: Array = []                # {name, value, band, state, unit}
 var issues: Array = []
 var banners: Array = []
 var sessions: Array = []
-var notes: Array = []
 var runtime := 0.0
 var grade := ""
 var grade_caps: Array = []
@@ -22,9 +21,6 @@ var fly: Array = []
 var cover: Array = []                # what the logs cover (chirp sweeps per axis, drag), lines
 var cli: Variant = null
 var hover_spread := 0.0
-var e1 := 0.0
-var t90: Variant = null
-var hv: Dictionary = {}
 
 
 func _init(craft: Dictionary) -> void:
@@ -167,7 +163,6 @@ func motor(P0: Array, P: Array, lam: float, r0: float, r1: float, r2: float, V: 
 		var ok: bool = 0.8 <= vs and vs <= 1.25
 		gate("kv_scale", "Motor KV (vbat scale)", ok, "scale %s (0.8–1.25)" % ("%.3f" % (vs)) + ("" if ok else ": KV probably wrong"))
 	sec("Motor/ESC", lines)
-	e1 = r1
 
 
 func motor_free_run(r1: float, hover_hz: float) -> void:
@@ -285,7 +280,7 @@ func bias(b: Variant, arm: float) -> void:
 
 func battery(bat: Dictionary) -> void:
 	var lines := ["Source: %s. V = V0 − R·I (I = the sim's current proxy). V0 per session: %s." % [bat.source, str(bat.get("V0_per_log"))],
-		"battery_v0 = %s V (freshest pack), battery_r = %s, discharge fitted %s V/min (exported as 0: the game simulates only the sag), RMS %s V." % [
+		"battery_v0 = %s V (freshest pack), battery_r = %s, discharge fitted %s V/min (not exported: the game simulates only the sag), RMS %s V." % [
 			f(bat.V0, 4), f(bat.R, 3), f(float(bat.drain) * 60.0, 3), f(bat.rms, 2)]]
 	if bat.source != "default":
 		meas("Battery V0, sag R", "%s V, %s" % [f(bat.V0, 4), f(bat.R, 3)], bat.source)
@@ -330,12 +325,10 @@ func drag(d: Dictionary, rd_ok: bool, body_src: String, top: Array, top_given: V
 
 
 func propwash(lg: Dictionary, p: Dictionary, dflt: Dictionary) -> void:
-	var own: bool = dflt.dirty_air_from == c.get("class")
 	var lines := ["Log metric (15–78 Hz roll/pitch tracking error, deg/s, median): calm %s, after throttle chops %s, flips after chops %s; 99th percentile of all usable windows outside chirps %s (windows %s). The targets of the prop wash calibration (below)." % [
 		str(lg.calm), str(lg.chops), str(lg.flips), str(lg.worst_p99), str(lg.n)],
-		"Class values before the calibration: dirty_air gust %s from the %s class%s, turbulence in the own wake %s m/s and in calm air %s m/s (reference scaled with the induced velocity, factor %s)." % [
-			str(p.dirty_air_gust), dflt.dirty_air_from, "" if own else " (uncalibrated for this class)", str(p.pw_turb_ms), str(p.turb_base_ms), f(dflt.v_induced_ratio, 3)],
-		"Wake radius of the Python plant (unused in the game): wake_r0 %s m." % str(p.wake_r0)]
+		"Class values before the calibration: turbulence in the own wake %s m/s and in calm air %s m/s (reference scaled with the induced velocity, factor %s)." % [
+			str(p.pw_turb_ms), str(p.turb_base_ms), f(dflt.v_induced_ratio, 3)]]
 	sec("Propwash / turbulence", lines)
 
 
@@ -358,7 +351,6 @@ func propwash_calibration(rec: Dictionary) -> void:
 		meas("Calm-air turbulence", "%s m/s" % str(rec.turb_base_ms), "calm hover %s deg/s (target %s)" % [str(sc.calm), str(tg.calm)])
 	else:
 		default("Calm-air turbulence", "%s m/s" % str(rec.turb_base_ms), "class value: not calibrated (%s)" % rec.why)
-	default("dirty_air wash/wake/gust", "1/1/%s" % str(rec.gust), "dirty_air's own figures")
 	sec("Prop wash calibration", lines)
 
 
@@ -380,8 +372,6 @@ func validation(h: Dictionary, s: Variant, ev: Array) -> void:
 	else:
 		warn("roll_t90", "Roll t90 sim vs. log", "no fast roll steps (≥ 300 deg/s) found: no closed-loop check")
 	sec("Validation", lines)
-	t90 = s
-	hv = h
 
 
 func render() -> String:
@@ -440,8 +430,4 @@ func render() -> String:
 	for s in sections:
 		out += ["", "## " + s[0]]
 		out += s[1]
-	if not notes.is_empty():
-		out += ["", "## Notes"]
-		for n in notes:
-			out.append("- " + n)
 	return "\n".join(out) + "\n"

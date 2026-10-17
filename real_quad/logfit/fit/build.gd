@@ -45,10 +45,8 @@ const Controller := preload("../../flightmodel/bf_controller.gd")
 const LOGFIT_VERSION := "1.0.0"
 const PLANT_KEYS := ["mass", "kv_rad", "motor_a", "motor_b", "motor_c", "motor_delay_s", "kT", "arm", "Ixx", "Iyy", "Izz", "kQ",
 	"J_rotor", "yaw_spin", "rate_damping", "pitch_m_per_rad", "cd_area", "rotor_drag", "linear_drag_ref_sum_w",
-	"torque_bias_per_thrust", "battery_v0", "battery_drain", "battery_r", "prop_radius", "wake_dt", "wake_life",
-	"wake_min_age", "wake_r0", "wake_growth", "wake_slip_factor", "wake_decel", "wake_cap", "wake_gain",
-	"turb_base_ms", "pw_turb_ms", "pw_noise_hz", "vrs_center", "vrs_width", "vrs_loss", "seed", "_comment",
-	"dirty_air_wash", "dirty_air_wake", "dirty_air_gust"]
+	"torque_bias_per_thrust", "battery_v0", "battery_r", "prop_radius", "turb_base_ms", "pw_turb_ms", "pw_noise_hz",
+	"seed", "_comment"]
 # (plant.json also gets "dirty_air_calibration", calibrate.gd's record, after them)
 const MIN_CHIRP_S := 30.0
 const MIN_AIRBORNE_S := 60.0
@@ -635,7 +633,6 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 	steps["07_battery"] = {"fit": bat_raw, "used": bat}
 
 	# the plant (drag filled below)
-	var da: Dictionary = dflt.dirty_air
 	var p := {
 		"mass": mass, "kv_rad": kv_rad,
 		"motor_a": P.map(func(x): return Num.pyround(x[0], 1)), "motor_b": P.map(func(x): return _sig(x[1], 5)),
@@ -648,16 +645,11 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 		"pitch_m_per_rad": geo.pitch_m_per_rad,
 		"cd_area": null, "rotor_drag": null, "linear_drag_ref_sum_w": Num.pyround(h.sum_w, 1),
 		"torque_bias_per_thrust": (b.beta if b != null else [0.0, 0.0, 0.0]).map(func(v): return _sig(v, 3)),
-		"battery_v0": Num.pyround(bat.V0, 2), "battery_drain": 0.0, "battery_r": _sig(bat.R, 4),
+		"battery_v0": Num.pyround(bat.V0, 2), "battery_r": _sig(bat.R, 4),
 		"prop_radius": Num.pyround(geo.prop_radius, 4),
 		"turb_base_ms": dflt.turb_base_ms, "pw_turb_ms": dflt.pw_turb_ms, "pw_noise_hz": dflt.pw_noise_hz,
-		"seed": 1, "dirty_air_wash": da.wash, "dirty_air_wake": da.wake, "dirty_air_gust": da.gust,
+		"seed": 1,
 	}
-	for k in dflt.wake:
-		var v: Variant = dflt.wake[k]
-		p[k] = Num.pyround(v, 4) if v is float else v
-	for k in dflt.vrs:
-		p[k] = dflt.vrs[k]
 	if b == null:
 		rep.default("Torque imbalance", "0", "no hover windows")
 	if cancel_flag:
@@ -805,7 +797,7 @@ func run(c: Dictionary, paths: PackedStringArray, out_dir: String, same_quad: bo
 	elif not LL.all(func(x): return x.has_vbat()):
 		warns.append(Checks.issue("vbat_partial", "info", "no usable battery voltage in " + ", ".join(LL.filter(func(x): return not x.has_vbat()).map(func(x): return x.name)) + " (motor voltage estimated per 2-s window there)", Checks.FIX.vbat))
 	if K.status != "validated":
-		rep.banners.append("The %s class is not validated yet: its defaults and plausibility bands are extrapolated; dirty_air values from the %s class (uncalibrated)" % [cls, dflt.dirty_air_from])
+		rep.banners.append("The %s class is not validated yet: its defaults and plausibility bands are extrapolated" % cls)
 	var mixed: Array = warns.filter(func(w): return w.code in ["board_differs", "firmware_differs", "hover_spread"])
 	if not mixed.is_empty():
 		rep.banners.append("Mixed configurations: " + "; ".join(mixed.map(func(w): return w.message)))
@@ -901,8 +893,7 @@ static func _param_sources(rd_ok: bool, body_src: String, yaw_ok: bool, chirp: b
 		"pitch_m_per_rad": "C" if geo.pitch_assumed else "U", "prop_radius": "U" if form.get("prop.diameter_in") == "U" else "C",
 		"cd_area": {"acc": "M", "top_speed": "D", "default": "C"}[body_src], "rotor_drag": "M" if rd_ok else "C",
 		"linear_drag_ref_sum_w": "M", "torque_bias_per_thrust": "M" if b != null else "C",
-		"battery_v0": bm, "battery_r": bm, "battery_drain": "K", "turb_base_ms": "C", "pw_turb_ms": "C", "pw_noise_hz": "K", "seed": "K",
-		"wake_*": "C", "vrs_*": "C", "dirty_air_*": "C"}
+		"battery_v0": bm, "battery_r": bm, "turb_base_ms": "C", "pw_turb_ms": "C", "pw_noise_hz": "K", "seed": "K"}
 
 
 ## Gyro spectral peak 15-40 Hz standing > 10x above the 15-80 Hz median (seven/ten classes).

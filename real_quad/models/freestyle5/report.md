@@ -53,8 +53,7 @@ Form: 0.65 kg, 6S lipo, 1855 KV, prop 5.1" × 4.99" × 3, class five, top speed 
 |---|---|---|
 | Motor distance (arm) | 80 mm | 80 mm × D/5.1" (only the absolute inertias depend on it) |
 | Izz | 0.00353 kg·m² | 1.7 × mean roll/pitch inertia (only J_rotor/Izz is measured) |
-| dirty_air wash/wake/gust | 1.0/1.0/1.0 | dirty_air's own figures |
-| Wake/turbulence/VRS | turb 0.31 / 3.8 m/s | reference scaled physically (calibrated in the game) |
+| Turbulence | turb 0.31 / 3.8 m/s | reference scaled physically (calibrated in the game) |
 | dirty_air wash/wake | 1/1 | dirty_air's own figures |
 
 ## Plausibility vs. the five class band
@@ -152,7 +151,7 @@ Per session (×10⁻³): m5_01_chirp6#1 [0.27, -2.87, 0.42], m5_03_hover#1 [-2.8
 
 ## Battery
 Source: vbat. V = V0 − R·I (I = the sim's current proxy). V0 per session: {'m5_01_chirp6#1': 24.95, 'm5_02_crash#1': 25.39, 'm5_03_hover#1': 25.17, 'm5_04_freestyle#1': 24.44, 'm5_05_freestyle#1': 23.73, 'm5_06_freestyle_abgeschnitten#1': 23.4, 'm5_07_chirp9#1': 25.12}.
-battery_v0 = 25.39 V (freshest pack), battery_r = 0.134, discharge fitted 0.345 V/min (exported as 0: the game simulates only the sag), RMS 0.22 V.
+battery_v0 = 25.39 V (freshest pack), battery_r = 0.134, discharge fitted 0.345 V/min (not exported: the game simulates only the sag), RMS 0.22 V.
 
 ## Drag and top speed
 ACC dead reckoning: 16 passes from hover (each up to 5 s, start velocity and tilt fitted too: RMS 1.6 m/s, 14°), 268 blocks of 0.25 s, speed p50/p90/p99 [5.2, 22.8, 35.6] m/s. Fit R² 0.9: rotor drag 0.29 1/s (±4.4 %), body scale 0.02 (±4.4e+02 %).
@@ -161,8 +160,7 @@ Top speed of the model (full throttle, level, fresh pack with sag): **165 km/h**
 
 ## Propwash / turbulence
 Log metric (15–78 Hz roll/pitch tracking error, deg/s, median): calm 0.75, after throttle chops 0.67, flips after chops 4.28; 99th percentile of all usable windows outside chirps 11.34 (windows (4125, 849, 96, 8325)). Targets of the prop wash calibration in the game (real_quad: drop and catch = 1.283 × p99, calm = the calm median).
-dirty_air wash/wake/gust 1.0/1.0/1.0 from the five class.
-Wake/turbulence amplitudes of the Python plant: reference values scaled with the induced velocity (factor 1): turb_base_ms 0.31, pw_turb_ms 3.8, wake_r0 0.12 m.
+Turbulence amplitudes (class values): reference values scaled with the induced velocity (factor 1): turb_base_ms 0.31, pw_turb_ms 3.8.
 
 ## Validation
 Hover: motor command sim 0.238 / log 0.245, rotor 158 / 158 Hz (model voltage 23.85 V).

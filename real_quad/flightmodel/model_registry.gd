@@ -2,15 +2,15 @@ extends RefCounted
 ## real_quad: the registry of model packages (models/<id>/ with craft.json, fc.json, plant.json).
 ##
 ## Pure logic, no UI: scans one or more root folders for packages, lists them, finds the model for a
-## Zone vehicle id, keeps an optional override assignment vehicle -> model (persisted in a
-## ConfigFile section) and loads/caches BFModel instances. real_quad/main.gd fills the overrides
-## from settings.cfg.
+## Zone vehicle id, keeps an optional override assignment vehicle -> model (from a ConfigFile
+## section [vehicle_models]) and loads/caches BFModel instances. real_quad/main.gd fills the
+## overrides from settings.cfg.
 ##
 ##   var reg := ModelRegistry.new(["res://real_quad/models"])
 ##   reg.scan()
 ##   for e in reg.list_models(): print(e.id, e.name, e.zone_vehicle_id)
-##   reg.set_override("5in_freestyle", "my_other_5in")       # or ModelRegistry.NONE = original physics
-##   var m := reg.model_for_vehicle("5in_freestyle")          # BFModel or null (no model -> Zone physics)
+##   reg.load_overrides(cfg)                                  # [vehicle_models] 5in_freestyle="my_other_5in" (or NONE)
+##   var m := reg.load_model(reg.resolve("5in_freestyle"))    # BFModel or null (no model -> Zone physics)
 ##
 ## Roots are scanned in order; a package id found in a later root replaces the same id from an
 ## earlier one (user packages override the built-in ones). Each replacement is listed in `notes`.
@@ -39,11 +39,6 @@ var _failed: Dictionary = {}         # ids whose package could not be loaded (no
 
 func _init(p_roots: PackedStringArray = PackedStringArray()) -> void:
 	roots = p_roots
-
-
-func add_root(path: String) -> void:
-	if not roots.has(path):
-		roots.append(path)
 
 
 # ------------------------------------------------------------------ scanning
@@ -129,17 +124,6 @@ func models_for_vehicle(vehicle_id: String) -> Array[Dictionary]:
 	return out
 
 
-## Zone vehicle ids that have at least one package.
-func vehicle_ids() -> PackedStringArray:
-	var out := PackedStringArray()
-	for id: String in _entries:
-		var v: String = _entries[id].zone_vehicle_id
-		if v != "" and not out.has(v):
-			out.append(v)
-	out.sort()
-	return out
-
-
 ## The model id used for a vehicle: the user's override if set (and still installed, or NONE),
 ## else the first package declaring that vehicle, else "" (no model: original physics).
 func resolve(vehicle_id: String) -> String:
@@ -153,33 +137,14 @@ func resolve(vehicle_id: String) -> String:
 
 
 # ------------------------------------------------------------------ override assignment
-## Assigns a model to a vehicle (any model to any vehicle). model_id "" removes the override
-## (back to the default), NONE keeps the original game physics for that vehicle.
-func set_override(vehicle_id: String, model_id: String) -> void:
-	if model_id == "":
-		_overrides.erase(vehicle_id)
-	else:
-		_overrides[vehicle_id] = model_id
-
-
-## The raw override ("" = none set, NONE, or a model id).
-func get_override(vehicle_id: String) -> String:
-	return _overrides.get(vehicle_id, "")
-
-
-func save_overrides(cfg: ConfigFile, section: String = "vehicle_models") -> void:
-	if cfg.has_section(section):
-		cfg.erase_section(section)
-	for v: String in _overrides:
-		cfg.set_value(section, v, _overrides[v])
-
-
-func load_overrides(cfg: ConfigFile, section: String = "vehicle_models") -> void:
+## The overrides from cfg's [vehicle_models]: vehicle id = model id (any model on any vehicle), or
+## NONE (the original game physics for that vehicle).
+func load_overrides(cfg: ConfigFile) -> void:
 	_overrides.clear()
-	if not cfg.has_section(section):
+	if not cfg.has_section("vehicle_models"):
 		return
-	for v in cfg.get_section_keys(section):
-		_overrides[v] = str(cfg.get_value(section, v, ""))
+	for v in cfg.get_section_keys("vehicle_models"):
+		_overrides[v] = str(cfg.get_value("vehicle_models", v, ""))
 
 
 # ------------------------------------------------------------------ loading
@@ -196,9 +161,3 @@ func load_model(id: String) -> BFModel:
 		return null
 	_cache[id] = m
 	return m
-
-
-## Convenience: the model that flies the given vehicle, or null (original physics).
-func model_for_vehicle(vehicle_id: String) -> BFModel:
-	var id := resolve(vehicle_id)
-	return load_model(id) if id != "" else null

@@ -206,13 +206,6 @@ static func percentile_sorted(s: PackedFloat64Array, q: float) -> float:
 	return a + d * g
 
 
-static func max_abs(x: PackedFloat64Array) -> float:
-	var m := 0.0
-	for v in x:
-		m = maxf(m, absf(v))
-	return m
-
-
 ## Python's roundf(x, nd): halves to even.
 static func pyround(x: float, nd: int = 0) -> float:
 	var p := pow(10.0, nd)

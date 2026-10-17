@@ -218,13 +218,6 @@ func rescan_models() -> void:
 	_write_status()
 
 
-## Where the models you made are kept (user://real_quad/models), made when asked
-func user_models_dir(create := false) -> String:
-	if create:
-		DirAccess.make_dir_recursive_absolute(user_root)
-	return ProjectSettings.globalize_path(user_root)
-
-
 ## Opens the model manager (logfit/window.gd), over the pause menu
 func open_model_manager() -> void:
 	if _builder == null or not is_instance_valid(_builder):
@@ -242,11 +235,6 @@ func open_model_manager() -> void:
 	_builder.open()
 	if not _builder.closed.is_connected(_builder_closed):
 		_builder.closed.connect(_builder_closed)
-
-
-## What the earlier versions called it
-func open_model_builder() -> void:
-	open_model_manager()
 
 
 func _builder_closed() -> void:
@@ -328,22 +316,6 @@ func game_drones() -> Array:
 		if not seen.has(id):
 			out.append({"id": id, "name": id})
 	return out
-
-
-## The drone being flown ("" when none)
-func flown_vehicle() -> String:
-	var gs := get_node_or_null("/root/ZGamestate")
-	var v = gs.get("selected_vehicle_id") if gs != null else null
-	return str(v) if v != null else ""
-
-
-## Where a model of this id is: "shipped" (real_quad/models, cannot be replaced), "user" (your own) or ""
-func model_origin(id: String) -> String:
-	if DirAccess.dir_exists_absolute(_game_dir().path_join("models").path_join(id)) or DirAccess.dir_exists_absolute("res://real_quad/models/" + id):
-		return "shipped"
-	if registry.has_model(id) or DirAccess.dir_exists_absolute(user_root.path_join(id)):
-		return "user"
-	return ""
 
 
 ## Sets model="<model_id>" in the drone's section of settings.cfg (the rest of the file stays as it is),
@@ -504,8 +476,8 @@ func flying(vehicle_id: String, model: RefCounted) -> void:
 	_say("flying %s with %s (%d g, %d Hz loop): drag %s per second; %s; pack %dS %d mAh%s, %.1f mOhm a cell (from the identified sag), %s" % [
 		vehicle_id, model.get_display_name(), int(round(float(model.plant_params.mass) * 1000.0)), int(round(model.get_loop_hz())),
 		str(snappedf(float(s["drag"]) if float(s["drag"]) > 0.0 else model.get_package_linear_drag(), 0.01)),
-		("prop wash from dirty_air, wash %s and wake %s (calibrated x propwash %s)%s" % [str(snappedf(model.get_air_wash(), 0.01)),
-			str(snappedf(model.get_air_wake(), 0.01)), str(s["propwash"]), ", with its floor and ceiling effect" if bool(cfg["ground_ceiling_effect"]) else ""])
+		("prop wash from dirty_air (calibrated x propwash %s)%s" % [str(s["propwash"]),
+			", with its floor and ceiling effect" if bool(cfg["ground_ceiling_effect"]) else ""])
 			if air != null else "no prop wash (dirty_air %s: clean air)" % _missing("dirty_air"),
 		int(bat["cells"]), int(bat["capacity_mah"]),
 		" (NOT IN THE PACKAGE: battery_capacity_mah from settings.cfg)" if no_cap else "", float(bat["resistance_mohm"]),
@@ -571,7 +543,7 @@ func _coexistence(fc: bool) -> void:
 	elif _core.call("get_mod", "flight_controller") != null:
 		lines.append("flight_controller: loaded but not in effect, so not used")
 	if air_node() != null:
-		lines.append("dirty_air: the prop wash of the modelled quads - its wake, gusts, descent curve and vortex ring state go into each prop of the model, with the wash and wake of the model's package"
+		lines.append("dirty_air: the prop wash of the modelled quads - its wake, gusts, descent curve and vortex ring state go into each prop of the model, scaled by the drone's propwash setting"
 			+ ("; and its floor and ceiling effect" if bool(cfg["ground_ceiling_effect"]) else " (its floor and ceiling effect off: ground_ceiling_effect=false)") + "; it pushes and shakes only the other drones")
 	else:
 		lines.append("dirty_air %s, so the modelled quads fly without prop wash (clean air)" % _missing("dirty_air"))

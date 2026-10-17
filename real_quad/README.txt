@@ -69,7 +69,8 @@ WHAT CHANGES
       flow and gusts of the wake the quad left behind, its descent curve
       and vortex ring state - goes into the model's props (descending,
       dirty_air's descent curve replaces the props' own inflow, so nothing
-      counts twice). dirty_air's wash, wake and gust stay its own (1).
+      counts twice). dirty_air's wash and wake are its own (1) times the
+      drone's propwash setting.
       How rough its air is drives the model's own turbulence at each prop
       (plant.json pw_turb_ms; freestyle5 4.93, freestyle35 3.97 m/s in the
       heart of the wake, fading over a quarter second once out of it), and
@@ -112,10 +113,8 @@ MODELS
     fc.json     the real flight controller's settings, from its blackbox
                 header: the loop rate, rates, PIDs, filters...
     plant.json  the quad worked out from the logs: motors, thrust and
-                torque constants, inertia, drag, battery sag, and
-                dirty_air's wash, wake and gust for it (dirty_air_wash,
-                dirty_air_wake, dirty_air_gust; 1 each if missing) and
-                the turbulence in its wake and in calm air (pw_turb_ms,
+                torque constants, inertia, drag, battery sag, and the
+                turbulence in its wake and in calm air (pw_turb_ms,
                 turb_base_ms)
   craft.json "battery": {"cells", "capacity_mah", "lihv"} is the pack it
   flies on. Without capacity_mah, battery_capacity_mah in settings.cfg is
@@ -219,9 +218,9 @@ WITH THE OTHER MODS
   drain, new props), and status.txt and the Mods page say "a stock
   version" instead of "not loaded":
     - dirty_air: the prop wash, and the floor and ceiling. real_quad calls
-      its set_model() each tick (the model's thrust, props, frame, wash,
-      wake and gust); dirty_air then works out the air at each prop of that
-      quad and the model takes it. dirty_air pushes the quad no more and
+      its set_model() each tick (the model's thrust, props and frame, and
+      the propwash setting as its wash and wake); dirty_air then works out
+      the air at each prop of that quad and the model takes it. dirty_air pushes the quad no more and
       does not shake it. Its settings (descent, wake, wash, ground_effect,
       ceiling_effect) apply as for every drone
     - battery_sag: its pack is the model's (see WHAT CHANGES). real_quad

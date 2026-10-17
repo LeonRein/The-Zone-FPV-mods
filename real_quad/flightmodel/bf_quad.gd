@@ -12,7 +12,7 @@ extends RefCounted
 ## turbulence: the buffeting of a punch out of the own wake lasts as the logs' does, many small kicks
 ## of each prop rather than one of the ring state's mean thrust.
 ##
-## Battery: the motors see v_batt = src_v - src_rp * current_proxy - src_ra * amps (model volts). By
+## Battery: the motors see v_batt = src_v - src_rp * proxy - src_ra * amps (model volts; proxy: step()'s i_proxy). By
 ## default that is the identified sag of a fresh pack (battery_v0, battery_r times the identification's
 ## current proxy); bf_model sets src_v / src_ra from the shared pack (battery_sag) each tick, src_rp
 ## then 0. The electrical current is worked out from the rotors' mechanical power over the drive's
@@ -47,7 +47,7 @@ var cd_area := Vector3()             # body Cd*A along FLU axes [m^2]
 var rotor_drag: float                # in-plane rotor drag [N per (m/s * rad/s)] (adjustable)
 var torque_bias := Vector3()         # constant torque imbalance per N of total thrust (FLU) [m]
 var rate_damping := Vector3()        # aerodynamic rate damping: d(omega)/dt -= k * sqrt(sum w^2)/1000 * omega [1/(s*krad/s)]
-var batt_v0: float                   # identified sag of a fresh pack: V = v0 - r*current_proxy
+var batt_v0: float                   # identified sag of a fresh pack: V = v0 - r*proxy
 var batt_r: float
 var drive_efficiency: float          # motors + ESCs, mechanical power over electrical
 var prop_radius: float
@@ -83,7 +83,6 @@ var wdot := PackedFloat64Array([0, 0, 0, 0])
 var omega := Vector3()                          # body rates [rad/s], FLU
 var thrust := PackedFloat64Array([0, 0, 0, 0])
 var v_batt: float = 0.0
-var current_proxy: float = 0.0
 var amps: float = 0.0                # battery current of the motors [A]
 var charge_as: float = 0.0           # amp-seconds, volt-seconds (v_batt) and seconds since bf_model last took them
 var charge_vs: float = 0.0
@@ -155,7 +154,6 @@ func reset() -> void:
 	wash_held = 0.0
 
 
-## Clean air: no air from outside (dirty_air gone or not flying).
 ## Rotor speed [rad/s] at full throttle on a full pack, no inflow (the motor's steady state at u = 1)
 func full_speed() -> float:
 	var a := mb[0]
@@ -164,6 +162,7 @@ func full_speed() -> float:
 	return (-b + sqrt(maxf(b * b - 4.0 * a * c, 0.0))) / (2.0 * a) if a > 0.0 else batt_v0 * kv
 
 
+## Clean air: no air from outside (dirty_air gone or not flying).
 func clear_air() -> void:
 	has_air = false
 	air_vel = Vector3()
@@ -196,7 +195,6 @@ func step(u: PackedFloat64Array, dt: float, basis: Basis, vel: Vector3) -> Vecto
 	for i in 4:
 		var ui := u[i]
 		i_proxy += ui * maxf(ui * v_batt - w[i] / kv, 0.0)
-	current_proxy = i_proxy
 	v_batt = src_v - src_rp * i_proxy - src_ra * amps      # (amps of the last step)
 	# calm-air turbulence and the own wake's buffeting: an air velocity fluctuation u' along each prop's
 	# axis changes its angle of attack, dT = -kT * w * u' / pitch (relatively strongest at low rpm, as real
